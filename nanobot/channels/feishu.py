@@ -238,17 +238,11 @@ class FeishuChannel(BaseChannel):
         }
 
     def _build_card_elements(self, content: str) -> list[dict]:
-        """Split content into div/markdown + table elements for Feishu card."""
-        elements, last_end = [], 0
-        for m in self._TABLE_RE.finditer(content):
-            before = content[last_end:m.start()]
-            if before.strip():
-                elements.extend(self._split_headings(before))
-            elements.append(self._parse_md_table(m.group(1)) or {"tag": "markdown", "content": m.group(1)})
-            last_end = m.end()
-        remaining = content[last_end:]
-        if remaining.strip():
-            elements.extend(self._split_headings(remaining))
+        """Split content into div/markdown elements for Feishu card.
+        
+        Tables are kept as markdown text (Feishu card markdown supports simple tables).
+        """
+        elements = self._split_headings(content)
         return elements or [{"tag": "markdown", "content": content}]
 
     def _split_headings(self, content: str) -> list[dict]:
