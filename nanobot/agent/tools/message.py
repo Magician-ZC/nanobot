@@ -4,6 +4,7 @@ from typing import Any, Callable, Awaitable
 
 from nanobot.agent.tools.base import Tool
 from nanobot.bus.events import OutboundMessage
+from nanobot.utils.media_parser import parse_media_tags
 
 
 class MessageTool(Tool):
@@ -78,6 +79,12 @@ class MessageTool(Tool):
             chat_id=chat_id,
             content=content
         )
+        
+        # 解析 MEDIA/[image:] 标记
+        cleaned, media_paths = parse_media_tags(msg.content)
+        if media_paths:
+            msg.content = cleaned  # 可能为空，send() 会跳过空文本
+            msg.media = media_paths
         
         try:
             await self._send_callback(msg)

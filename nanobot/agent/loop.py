@@ -23,6 +23,7 @@ from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.subagent import SubagentManager
 from nanobot.session.manager import Session, SessionManager
+from nanobot.utils.media_parser import parse_media_tags, validate_media_path
 
 
 class AgentLoop:
@@ -302,7 +303,16 @@ class AgentLoop:
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
         
-        preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
+        # 解析 MEDIA 标记，提取媒体文件路径
+        cleaned_content, media_paths = parse_media_tags(final_content)
+        # 过滤不安全的路径
+        workspace = self.context.workspace if hasattr(self.context, 'workspace') else None
+        safe_media = [p for p in media_paths if validate_media_path(p, workspace)]
+        if len(safe_media) < len(media_paths):
+            logger.warning(f"Filtered {len(media_paths) - len(safe_media)} unsafe media paths")
+        
+        display_content = cleaned_content or final_content
+        preview = display_content[:120] + "..." if len(display_content) > 120 else display_content
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
         
         session.add_message("user", msg.content)
@@ -313,7 +323,8 @@ class AgentLoop:
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content,
+            content=cleaned_content,
+            media=safe_media,
             metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
     
