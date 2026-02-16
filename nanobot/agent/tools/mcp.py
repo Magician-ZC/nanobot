@@ -52,6 +52,7 @@ async def connect_mcp_servers(
 
     for name, cfg in mcp_servers.items():
         try:
+            logger.debug(f"MCP server '{name}': command={cfg.command}, args={cfg.args}, env_keys={list(cfg.env.keys()) if cfg.env else None}")
             if cfg.command:
                 # Merge configured env with current process env
                 # (StdioServerParameters replaces env entirely if set)

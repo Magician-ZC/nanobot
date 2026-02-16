@@ -6,59 +6,35 @@ metadata: {"nanobot":{"emoji":"📕","always":true}}
 
 # 小红书 Skill（xhs-mcp）
 
-本 skill 通过 MCP 协议连接 `@sillyl12324/xhs-mcp` 服务器实现小红书自动化。
+> **重要**：当用户提到"小红书"、"登录小红书"、"搜索小红书"等关键词时，**必须调用 mcp_xhs_ 开头的工具**，禁止自己编造回复。
+> **禁止**使用 exec 工具或 browser skill 来操作小红书，必须使用 MCP 工具。
 
-> 所有工具名称以 `mcp_xhs_` 为前缀（nanobot 自动添加）。
+## 登录流程（最常用）
 
-## 使用流程
+当用户说"登录小红书"时，按以下步骤操作：
 
-### 1. 添加账号（首次使用需登录）
+1. 调用工具 `mcp_xhs_xhs_add_account`，参数 `{"name": "默认账号"}`
+2. 工具会返回 sessionId 和二维码 URL（qrCodeUrl）
+3. 把二维码 URL 发给用户，让用户用小红书 APP 扫码
+4. 用户扫码后，调用 `mcp_xhs_xhs_check_login_session`，参数 `{"sessionId": "上一步返回的sessionId"}`
+5. 如果需要短信验证，调用 `mcp_xhs_xhs_submit_verification`
 
-```
-mcp_xhs_xhs_add_account({ "name": "我的账号" })
-```
+## 搜索笔记
 
-系统返回二维码 URL，用小红书 App 扫码登录。
+调用 `mcp_xhs_xhs_search`，参数 `{"keyword": "搜索词"}`
 
-### 2. 查看已有账号
+## 获取笔记详情
 
-```
-mcp_xhs_xhs_list_accounts()
-```
+调用 `mcp_xhs_xhs_get_note`，参数 `{"noteId": "xxx", "xsecToken": "yyy"}`
+（noteId 和 xsecToken 从搜索结果中获取）
 
-### 3. 搜索笔记
+## 互动
 
-```
-mcp_xhs_xhs_search({ "keyword": "美食推荐" })
-```
+- 点赞：`mcp_xhs_xhs_like_feed`
+- 收藏：`mcp_xhs_xhs_favorite_feed`
+- 评论：`mcp_xhs_xhs_post_comment`
 
-返回结果包含 `noteId` 和 `xsecToken`，后续操作需要用到。
+## 发布
 
-### 4. 获取笔记详情
-
-```
-mcp_xhs_xhs_get_note({ "noteId": "xxx", "xsecToken": "yyy" })
-```
-
-### 5. 互动操作
-
-- 点赞：`mcp_xhs_xhs_like_feed({ "noteId": "xxx", "xsecToken": "yyy" })`
-- 收藏：`mcp_xhs_xhs_favorite_feed({ "noteId": "xxx", "xsecToken": "yyy" })`
-- 评论：`mcp_xhs_xhs_post_comment({ "noteId": "xxx", "xsecToken": "yyy", "content": "写得真好！" })`
-
-### 6. 发布图文笔记
-
-```
-mcp_xhs_xhs_publish_content({
-  "title": "今日分享",
-  "content": "笔记正文...",
-  "images": ["/path/to/image.jpg"]
-})
-```
-
-## 数据目录
-
-所有数据存储在 `~/.xhs-mcp/`：
-- `data.db` — SQLite 数据库（账号、cookie 等）
-- `downloads/` — 下载的图片和视频
-- `logs/` — 日志文件
+- 图文：`mcp_xhs_xhs_publish_content`
+- 视频：`mcp_xhs_xhs_publish_video`
