@@ -53,8 +53,14 @@ async def connect_mcp_servers(
     for name, cfg in mcp_servers.items():
         try:
             if cfg.command:
+                # Merge configured env with current process env
+                # (StdioServerParameters replaces env entirely if set)
+                merged_env = None
+                if cfg.env:
+                    import os
+                    merged_env = {**os.environ, **cfg.env}
                 params = StdioServerParameters(
-                    command=cfg.command, args=cfg.args, env=cfg.env or None
+                    command=cfg.command, args=cfg.args, env=merged_env
                 )
                 read, write = await stack.enter_async_context(stdio_client(params))
             elif cfg.url:
