@@ -17,9 +17,12 @@ metadata: {"nanobot":{"emoji":"📕","always":true}}
 2. 工具返回 JSON，包含 `sessionId` 和 `qrCodeUrl`
 3. **必须使用工具返回的真实 sessionId 和 qrCodeUrl，禁止编造**
 4. 用 MEDIA 标记把 qrCodeUrl 发给用户：`MEDIA:https://xxx.png`（飞书会自动下载并显示为图片）
-5. 告诉用户扫码，等用户回复"好了"后
-6. 调用 `mcp_xhs_xhs_check_login_session`，参数 `{"sessionId": "第2步返回的真实sessionId"}`
-7. 如果返回成功，告诉用户登录完成；如果需要短信验证，调用 `mcp_xhs_xhs_submit_verification`
+5. **在回复中必须包含 sessionId**，例如："请扫码登录（会话ID: sess_xxx）"。这样下一轮对话你才能找到它。
+6. 等用户回复"好了"后，从上一条回复中找到 sessionId
+7. 调用 `mcp_xhs_xhs_check_login_session`，参数 `{"sessionId": "上面保存的真实sessionId"}`
+8. 如果返回成功，告诉用户登录完成；如果需要短信验证，调用 `mcp_xhs_xhs_submit_verification`
+
+> **关键**：sessionId 格式为 `sess_` 开头的字符串（如 `sess_9aq40rdn`），绝不是从 URL 中截取的字符。
 
 ## 搜索笔记
 
