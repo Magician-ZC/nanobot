@@ -72,19 +72,33 @@ def _migrate_config(data: dict) -> dict:
     return data
 
 
-def convert_keys(data: Any) -> Any:
+# Keys whose values are dicts that should NOT have their keys converted
+_PASSTHROUGH_KEYS = frozenset({"env", "extra_headers", "groups"})
+
+
+def convert_keys(data: Any, _passthrough: bool = False) -> Any:
     """Convert camelCase keys to snake_case for Pydantic."""
+    if _passthrough:
+        return data
     if isinstance(data, dict):
-        return {camel_to_snake(k): convert_keys(v) for k, v in data.items()}
+        return {
+            camel_to_snake(k): convert_keys(v, _passthrough=(k in _PASSTHROUGH_KEYS))
+            for k, v in data.items()
+        }
     if isinstance(data, list):
         return [convert_keys(item) for item in data]
     return data
 
 
-def convert_to_camel(data: Any) -> Any:
+def convert_to_camel(data: Any, _passthrough: bool = False) -> Any:
     """Convert snake_case keys to camelCase."""
+    if _passthrough:
+        return data
     if isinstance(data, dict):
-        return {snake_to_camel(k): convert_to_camel(v) for k, v in data.items()}
+        return {
+            snake_to_camel(k): convert_to_camel(v, _passthrough=(k in _PASSTHROUGH_KEYS))
+            for k, v in data.items()
+        }
     if isinstance(data, list):
         return [convert_to_camel(item) for item in data]
     return data
