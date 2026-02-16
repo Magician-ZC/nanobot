@@ -26,16 +26,15 @@ metadata: {"nanobot":{"emoji":"📕","always":true}}
 
 ## 搜索笔记
 
-调用 `mcp_xhs_xhs_search`，参数 `{"keyword": "搜索词"}`
+调用 `mcp_xhs_xhs_search`，参数 `{"keyword": "搜索词", "count": 10}`
 
-**展示搜索结果时，必须包含每条笔记的：**
-- 标题
-- 作者
-- 点赞数
-- 笔记链接（格式：`https://www.xiaohongshu.com/explore/{noteId}`）
-- 封面图片（如果有 coverUrl，用 MEDIA 标记发送）
+**展示搜索结果时，对每一条笔记都必须包含：**
+1. 封面图：用 MEDIA 标记发送 cover 字段的 URL（将 http 改为 https）：`MEDIA:https://sns-webpic-qc.xhscdn.com/...`
+2. 标题、作者、点赞数
+3. 笔记链接：`https://www.xiaohongshu.com/explore/{id}?xsec_token={xsecToken}&xsec_source=pc_search`（id 和 xsecToken 都从搜索结果中获取）
 
-禁止只做"分析总结"而省略原始数据。用户要的是具体的笔记列表，不是统计分析。
+**必须展示所有返回的笔记，不要省略、不要只展示部分。**
+禁止只做"分析总结"而省略原始数据。
 
 ## 获取笔记详情
 

@@ -58,7 +58,7 @@ def validate_media_path(path: str, workspace: Path | None = None) -> bool:
         - Reject paths with directory traversal attempts
     """
     # URL 直接放行
-    if path.startswith("https://"):
+    if path.startswith(("https://", "http://")):
         return True
 
     # 拒绝明显的路径穿越
