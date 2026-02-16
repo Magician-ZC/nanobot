@@ -28,6 +28,15 @@ metadata: {"nanobot":{"emoji":"📕","always":true}}
 
 调用 `mcp_xhs_xhs_search`，参数 `{"keyword": "搜索词"}`
 
+**展示搜索结果时，必须包含每条笔记的：**
+- 标题
+- 作者
+- 点赞数
+- 笔记链接（格式：`https://www.xiaohongshu.com/explore/{noteId}`）
+- 封面图片（如果有 coverUrl，用 MEDIA 标记发送）
+
+禁止只做"分析总结"而省略原始数据。用户要的是具体的笔记列表，不是统计分析。
+
 ## 获取笔记详情
 
 调用 `mcp_xhs_xhs_get_note`，参数 `{"noteId": "xxx", "xsecToken": "yyy"}`
