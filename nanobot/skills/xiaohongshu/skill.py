@@ -140,6 +140,153 @@ async def publish(
             await browser.close()
 
 
+async def search(keyword: str, limit: int = 10) -> str:
+    """搜索小红书笔记。
+
+    Args:
+        keyword: 搜索关键词
+        limit: 返回结果数量，默认 10
+
+    Returns:
+        JSON 格式的搜索结果列表
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        # 如果有 cookie 就用，提高搜索成功率
+        if COOKIE_PATH.exists():
+            state = json.loads(COOKIE_PATH.read_text(encoding="utf-8"))
+            context = await browser.new_context(storage_state=state)
+
+        page = await context.new_page()
+
+        try:
+            search_url = f"https://www.xiaohongshu.com/search_result?keyword={keyword}&source=web_search_result_notes"
+            await page.goto(search_url, timeout=30_000)
+            await page.wait_for_timeout(3000)
+
+            # 等待笔记卡片加载
+            await page.wait_for_selector(".note-item, .search-result-item, section", timeout=15_000)
+            await page.wait_for_timeout(2000)
+
+            # 提取笔记信息
+            results = await page.evaluate(f"""
+                () => {{
+                    const items = document.querySelectorAll(
+                        '.note-item, section.note-item, [data-v-a264b01a], a.cover'
+                    );
+                    const results = [];
+                    const seen = new Set();
+                    for (const item of items) {{
+                        if (results.length >= {limit}) break;
+                        const link = item.closest('a') || item.querySelector('a');
+                        const href = link ? link.href : '';
+                        if (!href || seen.has(href)) continue;
+                        seen.add(href);
+
+                        // 尝试多种选择器获取标题和作者
+                        const titleEl = item.querySelector('.title, .note-title, .desc, span');
+                        const authorEl = item.querySelector('.author, .name, .nickname');
+                        const likeEl = item.querySelector('.like-count, .count, .like');
+
+                        results.push({{
+                            title: titleEl ? titleEl.innerText.trim() : '',
+                            author: authorEl ? authorEl.innerText.trim() : '',
+                            likes: likeEl ? likeEl.innerText.trim() : '',
+                            url: href,
+                        }});
+                    }}
+                    return results;
+                }}
+            """)
+
+            if not results:
+                # 备用方案：直接获取所有链接
+                results = await page.evaluate(f"""
+                    () => {{
+                        const links = document.querySelectorAll('a[href*="/explore/"], a[href*="/discovery/item/"]');
+                        const results = [];
+                        const seen = new Set();
+                        for (const a of links) {{
+                            if (results.length >= {limit}) break;
+                            const href = a.href;
+                            if (seen.has(href)) continue;
+                            seen.add(href);
+                            results.push({{
+                                title: a.innerText.trim().substring(0, 100) || '无标题',
+                                url: href,
+                            }});
+                        }}
+                        return results;
+                    }}
+                """)
+
+            return json.dumps(results, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            return f"搜索失败: {e}"
+        finally:
+            await browser.close()
+
+
+async def get_note(url: str) -> str:
+    """获取单篇小红书笔记的详细内容。
+
+    Args:
+        url: 笔记 URL
+
+    Returns:
+        笔记标题、作者、正文、点赞数等信息
+    """
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        if COOKIE_PATH.exists():
+            state = json.loads(COOKIE_PATH.read_text(encoding="utf-8"))
+            context = await browser.new_context(storage_state=state)
+
+        page = await context.new_page()
+
+        try:
+            await page.goto(url, timeout=30_000)
+            await page.wait_for_timeout(3000)
+
+            note = await page.evaluate("""
+                () => {
+                    const title = document.querySelector('#detail-title, .title, h1');
+                    const content = document.querySelector('#detail-desc, .desc, .content, .note-text');
+                    const author = document.querySelector('.author .name, .username, .user-name');
+                    const likes = document.querySelector('.like-count, .like .count, [data-type="like"]');
+                    const comments = document.querySelector('.comment-count, [data-type="comment"]');
+                    const collects = document.querySelector('.collect-count, [data-type="collect"]');
+                    const date = document.querySelector('.date, .publish-date, time');
+
+                    return {
+                        title: title ? title.innerText.trim() : '',
+                        content: content ? content.innerText.trim() : '',
+                        author: author ? author.innerText.trim() : '',
+                        likes: likes ? likes.innerText.trim() : '',
+                        comments: comments ? comments.innerText.trim() : '',
+                        collects: collects ? collects.innerText.trim() : '',
+                        date: date ? date.innerText.trim() : '',
+                    };
+                }
+            """)
+
+            return json.dumps(note, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            return f"获取笔记失败: {e}"
+        finally:
+            await browser.close()
+
+
 # 同步封装
 def login_sync() -> str:
     return asyncio.run(login())
@@ -152,6 +299,14 @@ def publish_sync(
     draft: bool = False,
 ) -> str:
     return asyncio.run(publish(title, content, images, draft))
+
+
+def search_sync(keyword: str, limit: int = 10) -> str:
+    return asyncio.run(search(keyword, limit))
+
+
+def get_note_sync(url: str) -> str:
+    return asyncio.run(get_note(url))
 
 
 if __name__ == "__main__":
