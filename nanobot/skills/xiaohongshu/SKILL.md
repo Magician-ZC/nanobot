@@ -14,10 +14,12 @@ metadata: {"nanobot":{"emoji":"📕","always":true}}
 当用户说"登录小红书"时，按以下步骤操作：
 
 1. 调用工具 `mcp_xhs_xhs_add_account`，参数 `{"name": "默认账号"}`
-2. 工具会返回 sessionId 和二维码 URL（qrCodeUrl）
-3. 把二维码 URL 发给用户，让用户用小红书 APP 扫码
-4. 用户扫码后，调用 `mcp_xhs_xhs_check_login_session`，参数 `{"sessionId": "上一步返回的sessionId"}`
-5. 如果需要短信验证，调用 `mcp_xhs_xhs_submit_verification`
+2. 工具返回 JSON，包含 `sessionId` 和 `qrCodeUrl`
+3. **必须使用工具返回的真实 sessionId 和 qrCodeUrl，禁止编造**
+4. 用 MEDIA 标记把 qrCodeUrl 发给用户：`MEDIA:https://xxx.png`（飞书会自动下载并显示为图片）
+5. 告诉用户扫码，等用户回复"好了"后
+6. 调用 `mcp_xhs_xhs_check_login_session`，参数 `{"sessionId": "第2步返回的真实sessionId"}`
+7. 如果返回成功，告诉用户登录完成；如果需要短信验证，调用 `mcp_xhs_xhs_submit_verification`
 
 ## 搜索笔记
 

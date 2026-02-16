@@ -358,10 +358,9 @@ class FeishuChannel(BaseChannel):
         """Upload and send a media file (image/video/file) to Feishu."""
         from pathlib import Path
 
-        # URL 类型：作为链接文本发送
-        if media_path.startswith("https://"):
-            content = json.dumps({"text": media_path}, ensure_ascii=False)
-            await self._send_raw_message(receive_id_type, chat_id, "text", content)
+        # URL 类型：下载后作为图片上传
+        if media_path.startswith(("https://", "http://")):
+            await self._send_remote_image(receive_id_type, chat_id, media_path)
             return
 
         file_path = Path(media_path)
@@ -396,6 +395,46 @@ class FeishuChannel(BaseChannel):
             if file_key:
                 content = json.dumps({"file_key": file_key}, ensure_ascii=False)
                 await self._send_raw_message(receive_id_type, chat_id, "file", content)
+
+    async def _send_remote_image(self, receive_id_type: str, chat_id: str, url: str) -> None:
+        """Download a remote image and send it as a Feishu image message."""
+        import tempfile
+        import httpx
+        from pathlib import Path
+
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+
+            # 根据 content-type 或 URL 后缀确定扩展名
+            ct = resp.headers.get("content-type", "")
+            if "png" in ct or url.endswith(".png"):
+                ext = ".png"
+            elif "gif" in ct or url.endswith(".gif"):
+                ext = ".gif"
+            else:
+                ext = ".jpg"
+
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(resp.content)
+                tmp_path = Path(tmp.name)
+
+            loop = asyncio.get_running_loop()
+            image_key = await self._upload_image(tmp_path, loop)
+            if image_key:
+                content = json.dumps({"image_key": image_key}, ensure_ascii=False)
+                await self._send_raw_message(receive_id_type, chat_id, "image", content)
+            else:
+                # 上传失败，回退为链接文本
+                content = json.dumps({"text": url}, ensure_ascii=False)
+                await self._send_raw_message(receive_id_type, chat_id, "text", content)
+
+            tmp_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.error(f"Failed to download/send remote image {url}: {e}")
+            content = json.dumps({"text": url}, ensure_ascii=False)
+            await self._send_raw_message(receive_id_type, chat_id, "text", content)
 
     async def _upload_image(self, file_path: "Path", loop) -> str | None:
         """Upload an image to Feishu, return image_key or None."""
