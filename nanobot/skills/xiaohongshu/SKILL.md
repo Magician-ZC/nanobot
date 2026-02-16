@@ -1,73 +1,64 @@
 ---
 name: xiaohongshu
-description: "小红书自动化：登录、搜索笔记、获取笔记详情、发布笔记。当用户提到小红书、红书、XHS时必须使用此skill。"
-metadata: {"nanobot":{"emoji":"📕","always":true,"requires":{"python":["playwright"]},"install":[{"id":"pip","kind":"pip","packages":["playwright"],"label":"Install Playwright (pip)"}]}}
+description: "小红书自动化（基于 xhs-mcp）：登录、搜索笔记、获取详情、点赞收藏评论、发布内容。当用户提到小红书、红书、XHS时使用此skill。"
+metadata: {"nanobot":{"emoji":"📕","always":true}}
 ---
 
-# 小红书 Skill
+# 小红书 Skill（xhs-mcp）
 
-> **重要**：当用户提到"小红书"、"红书"、"XHS"、"笔记搜索"等关键词时，必须使用本 skill。
-> **禁止**修改 `browser/skill.py` 来实现小红书功能。所有小红书相关代码都在 `nanobot/skills/xiaohongshu/skill.py` 中。
+本 skill 通过 MCP 协议连接 `@sillyl12324/xhs-mcp` 服务器实现小红书自动化。
 
-## 使用方法
+> 所有工具名称以 `mcp_xhs_` 为前缀（nanobot 自动添加）。
 
-所有函数都在 `nanobot/skills/xiaohongshu/skill.py` 中，通过 exec 工具调用 Python 代码执行。
+## 使用流程
 
-### 1. 登录（所有操作前必须先登录）
+### 1. 添加账号（首次使用需登录）
 
-```python
-# 通过 exec 工具执行：
-python3 -c "
-import asyncio
-from nanobot.skills.xiaohongshu.skill import login
-result = asyncio.run(login())
-print(result)
-"
+```
+mcp_xhs_xhs_add_account({ "name": "我的账号" })
 ```
 
-登录流程：
-1. headless 浏览器打开小红书登录页
-2. 截图二维码保存到 `~/.nanobot/xhs_qr.png`
-3. **你必须立即用 MEDIA 标记把二维码发给用户**：`MEDIA:~/.nanobot/xhs_qr.png`
-4. 函数内部轮询等待扫码成功（最多 120 秒）
-5. 扫码成功后 cookie 自动保存到 `~/.nanobot/xhs_cookies.json`
+系统返回二维码 URL，用小红书 App 扫码登录。
 
-### 2. 搜索笔记（需要先登录）
+### 2. 查看已有账号
 
-```python
-python3 -c "
-import asyncio
-from nanobot.skills.xiaohongshu.skill import search
-result = asyncio.run(search('关键词', limit=10))
-print(result)
-"
+```
+mcp_xhs_xhs_list_accounts()
 ```
 
-### 3. 获取笔记详情
+### 3. 搜索笔记
 
-```python
-python3 -c "
-import asyncio
-from nanobot.skills.xiaohongshu.skill import get_note
-result = asyncio.run(get_note('https://www.xiaohongshu.com/explore/xxxxx'))
-print(result)
-"
+```
+mcp_xhs_xhs_search({ "keyword": "美食推荐" })
 ```
 
-### 4. 发布图文笔记（需要登录）
+返回结果包含 `noteId` 和 `xsecToken`，后续操作需要用到。
 
-```python
-python3 -c "
-import asyncio
-from nanobot.skills.xiaohongshu.skill import publish
-result = asyncio.run(publish('标题', '正文内容', ['/path/to/image.png'], draft=False))
-print(result)
-"
+### 4. 获取笔记详情
+
+```
+mcp_xhs_xhs_get_note({ "noteId": "xxx", "xsecToken": "yyy" })
 ```
 
-## 注意事项
+### 5. 互动操作
 
-- Cookie 保存在 `~/.nanobot/xhs_cookies.json`，过期需重新登录
-- 搜索需要登录，未登录会返回错误提示
-- 标题最多 20 字符，超出自动截断
-- 发布笔记时浏览器以非 headless 模式打开（需要桌面环境）
+- 点赞：`mcp_xhs_xhs_like_feed({ "noteId": "xxx", "xsecToken": "yyy" })`
+- 收藏：`mcp_xhs_xhs_favorite_feed({ "noteId": "xxx", "xsecToken": "yyy" })`
+- 评论：`mcp_xhs_xhs_post_comment({ "noteId": "xxx", "xsecToken": "yyy", "content": "写得真好！" })`
+
+### 6. 发布图文笔记
+
+```
+mcp_xhs_xhs_publish_content({
+  "title": "今日分享",
+  "content": "笔记正文...",
+  "images": ["/path/to/image.jpg"]
+})
+```
+
+## 数据目录
+
+所有数据存储在 `~/.xhs-mcp/`：
+- `data.db` — SQLite 数据库（账号、cookie 等）
+- `downloads/` — 下载的图片和视频
+- `logs/` — 日志文件
