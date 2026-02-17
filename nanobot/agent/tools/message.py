@@ -53,6 +53,11 @@ class MessageTool(Tool):
                 "chat_id": {
                     "type": "string",
                     "description": "Optional: target chat/user ID"
+                },
+                "media": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional: list of file paths to attach (images, audio, documents)"
                 }
             },
             "required": ["content"]
@@ -63,6 +68,7 @@ class MessageTool(Tool):
         content: str, 
         channel: str | None = None, 
         chat_id: str | None = None,
+        media: list[str] | None = None,
         **kwargs: Any
     ) -> str:
         channel = channel or self._default_channel
@@ -77,7 +83,8 @@ class MessageTool(Tool):
         msg = OutboundMessage(
             channel=channel,
             chat_id=chat_id,
-            content=content
+            content=content,
+            media=media or []
         )
         
         # 解析 MEDIA/[image:] 标记
@@ -88,6 +95,7 @@ class MessageTool(Tool):
         
         try:
             await self._send_callback(msg)
-            return f"Message sent to {channel}:{chat_id}"
+            media_info = f" with {len(media)} attachments" if media else ""
+            return f"Message sent to {channel}:{chat_id}{media_info}"
         except Exception as e:
             return f"Error sending message: {str(e)}"
