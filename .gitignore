@@ -21,3 +21,4 @@ poetry.lock
 botpy.log
 tests/
 .DS_Store
+browser_data/
