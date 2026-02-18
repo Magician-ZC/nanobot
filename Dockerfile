@@ -33,8 +33,13 @@ WORKDIR /app
 # Create config directory
 RUN mkdir -p /root/.nanobot
 
+# 自动注册环境变量（一键部署时由 docker run -e 传入）
+ENV NANOBOT_REGISTER_TOKEN=""
+ENV NANOBOT_CONTROL_PLANE_URL=""
+
 # Gateway default port
 EXPOSE 18790
 
+# gateway 命令启动时会自动检测环境变量并执行注册
 ENTRYPOINT ["nanobot"]
-CMD ["status"]
+CMD ["gateway"]

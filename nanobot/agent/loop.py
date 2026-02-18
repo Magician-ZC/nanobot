@@ -1,12 +1,18 @@
 """Agent loop: the core processing engine."""
 
+from __future__ import annotations
+
 import asyncio
 from contextlib import AsyncExitStack
 import json
 import json_repair
 from pathlib import Path
 import re
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from nanobot.managed.client import ManagedClient
+    from nanobot.managed.policy import PolicyEnforcer
 
 from loguru import logger
 
@@ -55,6 +61,8 @@ class AgentLoop:
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
+        managed_client: ManagedClient | None = None,
+        policy_enforcer: PolicyEnforcer | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -85,11 +93,14 @@ class AgentLoop:
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
-        
+
         self._running = False
         self._mcp_servers = mcp_servers or {}
         self._mcp_stack: AsyncExitStack | None = None
         self._mcp_connected = False
+        self._managed_client = managed_client
+        self._policy_enforcer = policy_enforcer
+        self._heartbeat_service = None
         self._register_default_tools()
     
     def _register_default_tools(self) -> None:
@@ -125,14 +136,26 @@ class AgentLoop:
             self.tools.register(CronTool(self.cron_service))
     
     async def _connect_mcp(self) -> None:
-        """Connect to configured MCP servers (one-time, lazy)."""
+        """Connect to configured MCP servers (one-time, lazy).
+
+        受管模式下根据策略过滤 MCP Server 列表。
+        """
         if self._mcp_connected or not self._mcp_servers:
             return
         self._mcp_connected = True
+
+        servers = self._mcp_servers
+        # 受管模式下根据策略过滤 MCP Server
+        if self._policy_enforcer is not None:
+            servers = self._policy_enforcer.filter_mcp_servers(servers)
+
+        if not servers:
+            return
+
         from nanobot.agent.tools.mcp import connect_mcp_servers
         self._mcp_stack = AsyncExitStack()
         await self._mcp_stack.__aenter__()
-        await connect_mcp_servers(self._mcp_servers, self.tools, self._mcp_stack)
+        await connect_mcp_servers(servers, self.tools, self._mcp_stack)
 
     def _set_tool_context(self, channel: str, chat_id: str) -> None:
         """Update context for all tools that need routing info."""
@@ -231,10 +254,58 @@ class AgentLoop:
 
         return final_content, tools_used
 
+    async def _start_heartbeat(self) -> None:
+        """启动受管模式心跳服务"""
+        from nanobot.managed.heartbeat import ManagedHeartbeatService
+
+        client = self._managed_client
+        enforcer = self._policy_enforcer
+
+        def status_collector() -> dict[str, Any]:
+            """收集当前节点状态"""
+            loaded_skills = [t for t in self.tools.list_tools()]
+            return {
+                "loaded_skills": loaded_skills,
+                "connected_mcp_servers": list(self._mcp_servers.keys()) if self._mcp_servers else [],
+                "active_tasks": [],
+                "config_version": 0,
+                "policy_version": enforcer.policy.version if enforcer else 0,
+            }
+
+        async def on_update(response) -> None:
+            """心跳响应有更新时的回调"""
+            if response.has_policy_update and client and enforcer:
+                try:
+                    new_policy = await client.fetch_policy()
+                    enforcer.policy = new_policy
+                    enforcer.save_cache()
+                    logger.info("策略已更新到版本 %d", new_policy.version)
+                except Exception:
+                    logger.exception("拉取策略更新失败")
+
+        interval = 30
+        if client:
+            # 尝试从配置获取心跳间隔
+            interval = getattr(client, '_heartbeat_interval', 30) or 30
+
+        self._heartbeat_service = ManagedHeartbeatService(
+            client=client,
+            on_update=on_update,
+            status_collector=status_collector,
+            interval=interval,
+        )
+        await self._heartbeat_service.start()
+        logger.info("受管心跳服务已启动")
+
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
         self._running = True
         await self._connect_mcp()
+
+        # 受管模式下启动心跳服务
+        if self._managed_client is not None:
+            await self._start_heartbeat()
+
         logger.info("Agent loop started")
 
         while self._running:
@@ -269,6 +340,9 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
+        # 停止心跳服务（异步清理在 close_mcp 中处理）
+        if self._heartbeat_service and self._heartbeat_service.running:
+            asyncio.ensure_future(self._heartbeat_service.stop())
         logger.info("Agent loop stopping")
     
     async def _process_message(

@@ -318,6 +318,134 @@ def _make_provider(config: Config):
 
 
 # ============================================================================
+# Managed Mode Helpers
+# ============================================================================
+
+# ── 受管模式路径常量（供 _is_managed_mode / _validate_managed_config 等使用） ──
+_MANAGED_MARKER_PATH = Path.home() / ".nanobot" / ".managed"
+_CONFIG_CACHE_PATH = Path.home() / ".nanobot" / "config_cache.enc"
+
+
+def _is_managed_mode(config: Config) -> bool:
+    """判断是否应以受管模式运行
+
+    优先级：.managed 标记 > config_cache.enc > controlPlane 配置段
+    """
+    # 1. .managed 标记文件
+    if _MANAGED_MARKER_PATH.exists():
+        return True
+    # 2. 加密配置缓存
+    if _CONFIG_CACHE_PATH.exists():
+        return True
+    # 3. config.json 中 controlPlane.url 非空
+    if config.control_plane.url:
+        return True
+    return False
+
+
+def _validate_managed_config(config: Config) -> None:
+    """验证受管模式下的配置完整性，不满足则退出"""
+    cp = config.control_plane
+    if not cp.url or not cp.api_key or not cp.node_id:
+        console.print(
+            "[red]错误: 此节点为受管部署，需要 Control Plane 连接信息才能运行[/red]"
+        )
+        console.print(
+            "请确保 config.json 中 controlPlane 段包含 url、apiKey 和 nodeId"
+        )
+        raise typer.Exit(1)
+
+
+def _init_managed_components(config: Config):
+    """初始化受管模式组件，返回 (ManagedClient, PolicyEnforcer)
+
+    强制受管模式下：
+    1. 尝试连接 Control Plane 拉取完整配置和策略
+    2. 成功后加密缓存到本地
+    3. 连接失败时尝试使用本地加密缓存
+    4. 无法连接且无缓存时拒绝启动
+    """
+    from nanobot.managed.client import ManagedClient
+    from nanobot.managed.config_cache import EncryptedConfigCache
+    from nanobot.managed.policy import PolicyEnforcer
+
+    cp = config.control_plane
+    client = ManagedClient(
+        control_plane_url=cp.url,
+        api_key=cp.api_key,
+        node_id=cp.node_id,
+    )
+    config_cache = EncryptedConfigCache(api_key=cp.api_key)
+
+    import asyncio
+
+    # ── 拉取远程配置并加密缓存 ──
+    async def _fetch_remote_config():
+        try:
+            remote = await client.fetch_config()
+            config_data = remote.get("config_data", {})
+            config_data["config_version"] = remote.get("version", 0)
+            config_cache.save(config_data)
+            return config_data
+        except Exception as exc:
+            console.print(f"[yellow]警告: 无法从 Control Plane 拉取配置: {exc}[/yellow]")
+            return None
+
+    remote_config = asyncio.run(_fetch_remote_config())
+
+    # 连接失败时尝试本地加密缓存
+    if remote_config is None:
+        cached = config_cache.load()
+        if cached is not None:
+            console.print("[yellow]使用本地加密缓存配置（离线受管模式）[/yellow]")
+            remote_config = cached
+        else:
+            console.print("[red]错误: 无法连接 Control Plane 且无本地缓存，受管模式无法启动[/red]")
+            raise typer.Exit(1)
+
+    # ── 应用远程配置覆盖本地参数 ──
+    _apply_remote_config(config, remote_config)
+
+    # ── 拉取策略 ──
+    enforcer = PolicyEnforcer.load_from_cache()
+    if enforcer is None:
+        async def _fetch_policy():
+            try:
+                policy = await client.fetch_policy()
+                e = PolicyEnforcer(policy=policy)
+                e.save_cache()
+                return e
+            except Exception as exc:
+                console.print(f"[yellow]警告: 无法从 Control Plane 拉取策略: {exc}[/yellow]")
+                return None
+
+        enforcer = asyncio.run(_fetch_policy())
+        if enforcer is None:
+            console.print("[red]错误: 无法获取策略且无本地缓存，受管模式无法启动[/red]")
+            raise typer.Exit(1)
+
+    return client, enforcer
+
+
+def _apply_remote_config(config: Config, remote_config: dict) -> None:
+    """将远程配置应用到本地 Config 对象，覆盖 LLM/通道/代理参数
+
+    强制受管模式下，本地 config.json 中的这些字段会被忽略，
+    仅使用 Control Plane 下发的配置。
+    """
+    # 远程配置可能包含 llm、channels、agent 等顶层字段
+    for key in ("agents", "channels", "providers", "tools"):
+        if key in remote_config:
+            try:
+                sub_data = remote_config[key]
+                sub_model = getattr(config, key).__class__.model_validate(sub_data)
+                setattr(config, key, sub_model)
+                setattr(config, key, sub_model)
+            except Exception:
+                pass  # 远程配置字段格式不匹配时保持本地值
+
+
+# ============================================================================
 # Gateway / Server
 # ============================================================================
 
@@ -340,6 +468,10 @@ def gateway(
     if verbose:
         import logging
         logging.basicConfig(level=logging.DEBUG)
+    
+    # Docker 自动注册引导：检测环境变量，首次启动时自动注册
+    from nanobot.managed.bootstrap import auto_register_if_needed
+    asyncio.run(auto_register_if_needed())
     
     console.print(f"{__logo__} Starting nanobot gateway on port {port}...")
     
@@ -470,6 +602,16 @@ def agent(
     else:
         logger.disable("nanobot")
     
+    # 检测受管模式
+    managed_client = None
+    policy_enforcer = None
+    managed = _is_managed_mode(config)
+    
+    if managed:
+        _validate_managed_config(config)
+        managed_client, policy_enforcer = _init_managed_components(config)
+        console.print("[green]✓[/green] 受管模式已启用")
+    
     agent_loop = AgentLoop(
         bus=bus,
         provider=provider,
@@ -484,6 +626,8 @@ def agent(
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         mcp_servers=config.tools.mcp_servers,
+        managed_client=managed_client,
+        policy_enforcer=policy_enforcer,
     )
     
     # Show spinner when logs are off (no output to miss); skip when logs are on
@@ -918,6 +1062,61 @@ def status():
 
 
 # ============================================================================
+# Register Command (受管模式节点注册)
+# ============================================================================
+
+
+@app.command()
+def register(
+    token: str = typer.Option(..., "--token", "-t", help="注册令牌"),
+    server: str = typer.Option(..., "--server", "-s", help="Control Plane 地址"),
+):
+    """注册节点到 Control Plane。"""
+    import platform
+    from nanobot.config.loader import load_config, save_config, get_config_path
+
+    console.print(f"{__logo__} 正在注册节点到 Control Plane...")
+
+    config_path = get_config_path()
+    if config_path.exists():
+        config = load_config()
+    else:
+        config = Config()
+
+    hostname = platform.node() or "unknown"
+
+    async def _do_register():
+        from nanobot.managed.client import ManagedClient, ControlPlaneError
+        client = ManagedClient(control_plane_url=server)
+        try:
+            result = await client.register(token=token, hostname=hostname)
+            return result
+        except ControlPlaneError as e:
+            console.print(f"[red]注册失败: {e}[/red]")
+            raise typer.Exit(1)
+        finally:
+            await client.close()
+
+    result = asyncio.run(_do_register())
+
+    # 写入配置
+    config.control_plane.url = server
+    config.control_plane.api_key = result["api_key"]
+    config.control_plane.node_id = result["node_id"]
+    save_config(config)
+
+    # 创建受管标记文件
+    from nanobot.managed.marker import ManagedMarker
+    marker = ManagedMarker()
+    marker.create(server)
+
+    console.print(f"[green]✓[/green] 注册成功")
+    console.print(f"  Node ID: {result['node_id']}")
+    console.print(f"  配置已写入: {config_path}")
+    console.print(f"  受管标记已创建: {marker.path}")
+
+
+# ============================================================================
 # OAuth Login
 # ============================================================================
 
@@ -933,6 +1132,35 @@ def _register_login(name: str):
         _LOGIN_HANDLERS[name] = fn
         return fn
     return decorator
+
+
+@app.command("control-plane")
+def control_plane(
+    host: str = typer.Option("0.0.0.0", "--host", "-h", help="监听地址"),
+    port: int = typer.Option(8080, "--port", "-p", help="监听端口"),
+    db_path: str = typer.Option(None, "--db", help="数据库文件路径（默认 data/control_plane.db）"),
+):
+    """启动 Control Plane 管理服务。"""
+    try:
+        import uvicorn
+        from control_plane.app import create_app
+    except ImportError:
+        console.print(
+            "[red]缺少 control-plane 依赖，请安装：[/red]\n"
+            "  pip install nanobot-ai[control-plane]"
+        )
+        raise typer.Exit(1)
+
+    from pathlib import Path as _Path
+
+    _db = _Path(db_path) if db_path else None
+    app_instance = create_app(db_path=_db)
+
+    console.print(f"{__logo__} 启动 Control Plane 服务...")
+    console.print(f"  地址: http://{host}:{port}")
+    console.print(f"  数据库: {db_path or 'data/control_plane.db'}")
+
+    uvicorn.run(app_instance, host=host, port=port, log_level="info")
 
 
 @provider_app.command("login")

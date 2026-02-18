@@ -22,3 +22,11 @@ botpy.log
 tests/
 .DS_Store
 browser_data/
+control_plane/frontend/node_modules
+
+# IDE / editor
+.vscode/
+.kiro/
+
+# Runtime data
+data/

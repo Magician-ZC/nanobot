@@ -268,6 +268,14 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class ControlPlaneConfig(BaseModel):
+    """Control Plane 连接配置（本地持久化）"""
+    url: str = ""              # Control Plane 地址，为空且无 .managed 标记则独立模式
+    api_key: str = ""          # 注册后获得的 API 密钥
+    node_id: str = ""          # 节点 ID
+    heartbeat_interval: int = 30  # 心跳间隔（秒）
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -276,6 +284,8 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    control_plane: ControlPlaneConfig = Field(default_factory=ControlPlaneConfig)
+
 
     @property
     def workspace_path(self) -> Path:
