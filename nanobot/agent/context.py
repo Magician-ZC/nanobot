@@ -115,7 +115,7 @@ You can include multiple MEDIA tags. Combine text and media freely:
     Here is the screenshot you requested.
     MEDIA:/path/to/screenshot.png
 
-Always be helpful, accurate, and concise. When using tools, think step by step: what you know, what you need, and why you chose this tool.
+Always be helpful, accurate, and concise. Before calling tools, briefly tell the user what you're about to do (one short sentence in the user's language).
 When remembering something important, write to {workspace_path}/memory/MEMORY.md
 To recall past events, grep {workspace_path}/memory/HISTORY.md"""
     
