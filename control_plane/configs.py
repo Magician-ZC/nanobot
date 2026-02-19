@@ -8,7 +8,7 @@ from control_plane.database import get_connection
 
 
 async def get_node_config(node_id: str) -> dict | None:
-    """获取节点配置"""
+    """获取节点配置，如果不存在则自动创建空配置"""
     conn = await get_connection()
     try:
         cursor = await conn.execute(
@@ -17,9 +17,34 @@ async def get_node_config(node_id: str) -> dict | None:
             (node_id,),
         )
         row = await cursor.fetchone()
-        if not row:
+        if row:
+            return _row_to_config(row)
+
+        # 配置不存在，检查节点是否存在
+        cursor = await conn.execute("SELECT id FROM nodes WHERE id = ?", (node_id,))
+        if not await cursor.fetchone():
             return None
-        return _row_to_config(row)
+
+        # 节点存在但无配置，自动创建空配置
+        config_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        await conn.execute(
+            """INSERT INTO node_configs (id, node_id, config_data, version, updated_at)
+               VALUES (?, ?, '{}', 1, ?)""",
+            (config_id, node_id, now),
+        )
+        await conn.execute(
+            "UPDATE nodes SET config_version = 1 WHERE id = ?",
+            (node_id,),
+        )
+        await conn.commit()
+        return {
+            "id": config_id,
+            "node_id": node_id,
+            "config_data": {},
+            "version": 1,
+            "updated_at": now,
+        }
     finally:
         await conn.close()
 

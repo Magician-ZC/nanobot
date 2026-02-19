@@ -54,6 +54,15 @@ async def check_node_access(user: dict, node_id: str) -> dict:
         if user["role"] == "admin":
             return node
 
+        # 节点自身认证：只能访问自己的数据
+        if user["role"] == "node":
+            if user.get("node_id") != node_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Access denied: node can only access its own data",
+                )
+            return node
+
         # operator 仅允许访问自己的节点
         if node["user_id"] != user["id"]:
             raise HTTPException(

@@ -17,7 +17,14 @@ from control_plane.routes.logs import router as logs_router
 from control_plane.routes.nodes import router as nodes_router
 from control_plane.routes.policies import router as policies_router
 from control_plane.routes.skill_store import router as skill_store_router
+from control_plane.routes.feishu_gateway import (
+    router as feishu_gateway_router,
+    set_gateway_service,
+    set_message_router,
+)
 from control_plane.routes.tasks import router as tasks_router
+from control_plane.feishu_gateway import FeishuGatewayService
+from control_plane.feishu_router import MessageRouter
 
 
 async def _ensure_admin_user() -> None:
@@ -51,7 +58,18 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         # 启动时初始化数据库并确保 admin 用户存在
         await init_db(db_path)
         await _ensure_admin_user()
+
+        # 初始化飞书网关服务和消息路由器
+        gateway_service = FeishuGatewayService()
+        message_router = MessageRouter(gateway_service=gateway_service)
+        gateway_service.set_message_callback(message_router.route_inbound)
+        set_gateway_service(gateway_service)
+        set_message_router(message_router)
+
         yield
+
+        # 关闭时停止网关
+        await gateway_service.stop()
 
     app = FastAPI(
         title="Nanobot Control Plane",
@@ -68,6 +86,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     app.include_router(policies_router)
     app.include_router(skill_store_router)
     app.include_router(tasks_router)
+    app.include_router(feishu_gateway_router)
 
     # 挂载前端静态文件（构建产物）
     _mount_frontend(app)

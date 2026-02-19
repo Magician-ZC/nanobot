@@ -199,7 +199,7 @@ async def get_mcp_server_by_name(name: str) -> dict | None:
 # ── 节点资源策略 CRUD ─────────────────────────────────────────────
 
 async def get_node_policy(node_id: str) -> dict | None:
-    """获取节点的资源策略，包含 Skill 版本信息"""
+    """获取节点的资源策略，如果不存在则自动创建空策略"""
     conn = await get_connection()
     try:
         cursor = await conn.execute(
@@ -208,8 +208,36 @@ async def get_node_policy(node_id: str) -> dict | None:
             (node_id,),
         )
         row = await cursor.fetchone()
+
         if not row:
-            return None
+            # 策略不存在，检查节点是否存在
+            cursor = await conn.execute("SELECT id FROM nodes WHERE id = ?", (node_id,))
+            if not await cursor.fetchone():
+                return None
+
+            # 节点存在但无策略，自动创建空策略
+            policy_id = str(uuid.uuid4())
+            now = datetime.now(timezone.utc).isoformat()
+            await conn.execute(
+                """INSERT INTO resource_policies (id, node_id, allowed_skills, allowed_mcp_servers, version, updated_at)
+                   VALUES (?, ?, '[]', '[]', 1, ?)""",
+                (policy_id, node_id, now),
+            )
+            await conn.execute(
+                "UPDATE nodes SET policy_version = 1 WHERE id = ?",
+                (node_id,),
+            )
+            await conn.commit()
+            return {
+                "id": policy_id,
+                "node_id": node_id,
+                "allowed_skills": [],
+                "allowed_mcp_servers": [],
+                "version": 1,
+                "updated_at": now,
+                "skill_versions": {},
+            }
+
         policy = _row_to_policy(row)
 
         # 查询策略中 Skill 的版本信息

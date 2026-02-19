@@ -100,10 +100,17 @@ class ManagedClient:
         self.node_id = node_id
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=timeout,
-        )
+        self._timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        """确保 httpx client 可用（延迟创建，避免跨 event loop 问题）"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self._timeout,
+            )
+        return self._client
 
     def _headers(self) -> dict[str, str]:
         """构建请求头，包含 API Key 认证"""
@@ -140,7 +147,7 @@ class ManagedClient:
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = await self._client.request(
+                response = await self._ensure_client().request(
                     method,
                     path,
                     json=json,
@@ -476,7 +483,7 @@ class ManagedClient:
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = await self._client.get(
+                response = await self._ensure_client().get(
                     f"/api/skills/{name}/download",
                     params=params,
                     headers=self._headers(),
@@ -503,7 +510,8 @@ class ManagedClient:
 
     async def close(self) -> None:
         """关闭 HTTP 客户端"""
-        await self._client.aclose()
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     async def __aenter__(self) -> "ManagedClient":
         return self

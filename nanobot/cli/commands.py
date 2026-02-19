@@ -379,19 +379,33 @@ def _init_managed_components(config: Config):
 
     import asyncio
 
-    # ── 拉取远程配置并加密缓存 ──
-    async def _fetch_remote_config():
+    # ── 一次性拉取远程配置和策略 ──
+    async def _fetch_all():
+        remote_config = None
+        enforcer = None
         try:
             remote = await client.fetch_config()
             config_data = remote.get("config_data", {})
             config_data["config_version"] = remote.get("version", 0)
             config_cache.save(config_data)
-            return config_data
+            remote_config = config_data
         except Exception as exc:
             console.print(f"[yellow]警告: 无法从 Control Plane 拉取配置: {exc}[/yellow]")
-            return None
 
-    remote_config = asyncio.run(_fetch_remote_config())
+        try:
+            policy = await client.fetch_policy()
+            enforcer = PolicyEnforcer(policy=policy)
+            enforcer.save_cache()
+        except Exception as exc:
+            console.print(f"[yellow]警告: 无法从 Control Plane 拉取策略: {exc}[/yellow]")
+
+        return remote_config, enforcer
+
+    remote_config, enforcer = asyncio.run(_fetch_all())
+
+    # asyncio.run() 结束后 event loop 已关闭，旧的 httpx client 不可复用
+    # 置空后 _ensure_client() 会在新 event loop 中自动重建
+    client._client = None
 
     # 连接失败时尝试本地加密缓存
     if remote_config is None:
@@ -406,20 +420,16 @@ def _init_managed_components(config: Config):
     # ── 应用远程配置覆盖本地参数 ──
     _apply_remote_config(config, remote_config)
 
-    # ── 拉取策略 ──
-    enforcer = PolicyEnforcer.load_from_cache()
-    if enforcer is None:
-        async def _fetch_policy():
-            try:
-                policy = await client.fetch_policy()
-                e = PolicyEnforcer(policy=policy)
-                e.save_cache()
-                return e
-            except Exception as exc:
-                console.print(f"[yellow]警告: 无法从 Control Plane 拉取策略: {exc}[/yellow]")
-                return None
+    # 检查 LLM Key 是否已分配
+    llm_key = remote_config.get("llm_key")
+    if llm_key and llm_key.get("api_key"):
+        console.print(f"✓ LLM Key 已注入 (provider={llm_key['provider']})")
+    else:
+        console.print("[yellow]⚠ Control Plane 未分配 LLM Key，节点将无法调用 LLM[/yellow]")
 
-        enforcer = asyncio.run(_fetch_policy())
+    # ── 策略降级 ──
+    if enforcer is None:
+        enforcer = PolicyEnforcer.load_from_cache()
         if enforcer is None:
             console.print("[red]错误: 无法获取策略且无本地缓存，受管模式无法启动[/red]")
             raise typer.Exit(1)
@@ -433,6 +443,9 @@ def _apply_remote_config(config: Config, remote_config: dict) -> None:
     强制受管模式下，本地 config.json 中的这些字段会被忽略，
     仅使用 Control Plane 下发的配置。
     """
+    # 保存远程配置版本号，供心跳上报使用
+    config._remote_config_version = remote_config.get("config_version", 0)
+
     # 远程配置可能包含 llm、channels、agent 等顶层字段
     for key in ("agents", "channels", "providers", "tools"):
         if key in remote_config:
@@ -440,14 +453,59 @@ def _apply_remote_config(config: Config, remote_config: dict) -> None:
                 sub_data = remote_config[key]
                 sub_model = getattr(config, key).__class__.model_validate(sub_data)
                 setattr(config, key, sub_model)
-                setattr(config, key, sub_model)
             except Exception:
                 pass  # 远程配置字段格式不匹配时保持本地值
+
+    # ── 受管模式 LLM Key 管控 ──
+    # 清空本地所有 provider 的 api_key，防止节点使用本地 key 绕过管控
+    from loguru import logger
+    from nanobot.providers.registry import PROVIDERS
+    for spec in PROVIDERS:
+        p = getattr(config.providers, spec.name, None)
+        if p and p.api_key:
+            p.api_key = ""
+
+    # 注入 Control Plane 分配的 LLM Key
+    llm_key = remote_config.get("llm_key")
+    if llm_key and llm_key.get("api_key"):
+        provider_name = llm_key["provider"]
+        api_key = llm_key["api_key"]
+        p = getattr(config.providers, provider_name, None)
+        if p is not None:
+            p.api_key = api_key
+            logger.info(f"受管模式: 已注入 Control Plane 分配的 LLM Key (provider={provider_name})")
+        else:
+            logger.warning(f"受管模式: 未知的 provider '{provider_name}'，无法注入 LLM Key")
+    else:
+        logger.warning("受管模式: Control Plane 未分配 LLM Key，节点将无法调用 LLM")
 
 
 # ============================================================================
 # Gateway / Server
 # ============================================================================
+
+# 受管模式心跳间隔（秒）
+_MANAGED_HEARTBEAT_INTERVAL = 30
+
+
+async def _managed_heartbeat_loop(client, policy_enforcer, config):
+    """受管模式下定期向 Control Plane 发送心跳，保持节点 online 状态"""
+    from nanobot.managed.client import ManagedClient
+    interval = _MANAGED_HEARTBEAT_INTERVAL
+    while True:
+        try:
+            resp = await client.heartbeat(
+                config_version=getattr(config, '_remote_config_version', 0),
+                policy_version=policy_enforcer.policy.version,
+            )
+            if resp.has_config_update or resp.has_policy_update:
+                console.print(
+                    f"[yellow]ℹ[/yellow] Control Plane 有更新 "
+                    f"(config: v{resp.latest_config_version}, policy: v{resp.latest_policy_version})"
+                )
+        except Exception as e:
+            console.print(f"[yellow]警告: 心跳发送失败: {e}[/yellow]")
+        await asyncio.sleep(interval)
 
 
 @app.command()
@@ -477,8 +535,43 @@ def gateway(
     
     config = load_config()
     bus = MessageBus()
+    
+    # ── 受管模式检测 ──
+    managed = _is_managed_mode(config)
+    gateway_msg_client = None
+    
+    if managed:
+        _validate_managed_config(config)
+        
+        # 拉取远程配置覆盖本地配置（受管模式下所有配置由 Control Plane 统一管理）
+        managed_client, policy_enforcer = _init_managed_components(config)
+        console.print("[green]✓[/green] 受管模式已启用（远程配置已加载）")
+        
+        # 受管模式下禁用本地飞书通道，避免与 Control Plane 的飞书网关 WebSocket 冲突
+        if config.channels.feishu.enabled:
+            config.channels.feishu.enabled = False
+            console.print("[yellow]ℹ[/yellow] 受管模式下已禁用本地飞书通道（由 Control Plane 统一管理）")
+        
+        # 初始化网关消息客户端（通过 WebSocket + api_key 认证）
+        from nanobot.managed.gateway_client import GatewayMessageClient
+        cp = config.control_plane
+        gateway_msg_client = GatewayMessageClient(
+            control_plane_url=cp.url,
+            api_key=cp.api_key,
+            node_id=cp.node_id,
+            bus=bus,
+        )
+        console.print(f"[green]✓[/green] 网关消息客户端已初始化 (节点: {cp.node_id[:8]}...)")
+    
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
+    
+    # 受管模式下根据策略过滤 MCP servers，只连接 Control Plane 分配的
+    mcp_servers = config.tools.mcp_servers
+    if managed:
+        mcp_servers = policy_enforcer.filter_mcp_servers(mcp_servers)
+        # 同步更新 config 对象，防止 agent 通过其他途径读取到被禁止的 MCP 配置
+        config.tools.mcp_servers = mcp_servers
     
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
@@ -499,7 +592,7 @@ def gateway(
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
-        mcp_servers=config.tools.mcp_servers,
+        mcp_servers=mcp_servers,
     )
     
     # Set cron callback (needs agent)
@@ -539,18 +632,28 @@ def gateway(
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
     else:
-        console.print("[yellow]Warning: No channels enabled[/yellow]")
+        if not managed:
+            console.print("[yellow]Warning: No channels enabled[/yellow]")
     
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
         console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
     
-    console.print(f"[green]✓[/green] Heartbeat: every 30m")
+    console.print(f"[green]✓[/green] Heartbeat: every 30m{' (CP heartbeat: 30s)' if managed else ''}")
     
     async def run():
         try:
             await cron.start()
             await heartbeat.start()
+            # 受管模式下启动网关消息客户端 + Control Plane 心跳
+            if gateway_msg_client:
+                await gateway_msg_client.start()
+                console.print("[green]✓[/green] 网关消息客户端已连接 Control Plane")
+            if managed:
+                # 立即发一次心跳让节点变为 online，然后启动定期心跳
+                asyncio.create_task(_managed_heartbeat_loop(
+                    managed_client, policy_enforcer, config
+                ))
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
@@ -558,6 +661,9 @@ def gateway(
         except KeyboardInterrupt:
             console.print("\nShutting down...")
         finally:
+            # 受管模式下停止网关消息客户端
+            if gateway_msg_client:
+                await gateway_msg_client.stop()
             await agent.close_mcp()
             heartbeat.stop()
             cron.stop()

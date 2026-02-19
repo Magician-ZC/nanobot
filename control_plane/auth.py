@@ -273,3 +273,35 @@ async def require_admin(
             detail="Admin access required",
         )
     return current_user
+
+
+async def get_current_user_or_node(
+    credentials: HTTPAuthorizationCredentials = Depends(_security),
+) -> dict:
+    """FastAPI 依赖：先尝试 JWT 用户认证，失败后尝试节点 API Key 认证
+
+    节点认证时 Bearer token 格式为 "{api_key}"，
+    返回 {"id": node_id, "role": "node", "node_id": node_id}
+    """
+    token = credentials.credentials
+
+    # 1. 先尝试 JWT 认证
+    try:
+        payload = decode_access_token(token)
+        user_id = payload["sub"]
+        user = await get_user_by_id(user_id)
+        if user and user["is_active"]:
+            return user
+    except HTTPException:
+        pass
+
+    # 2. JWT 失败，尝试节点 API Key 认证
+    from control_plane.nodes import verify_node_api_key_only
+    node = await verify_node_api_key_only(token)
+    if node:
+        return {"id": node["id"], "role": "node", "node_id": node["id"]}
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired token",
+    )

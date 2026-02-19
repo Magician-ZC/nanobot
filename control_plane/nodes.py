@@ -120,6 +120,31 @@ async def register_node(token_id: str, hostname: str) -> dict:
             "UPDATE registration_tokens SET is_used = 1 WHERE id = ?",
             (token_id,),
         )
+
+        # 自动创建空配置记录，避免节点拉取配置时 404
+        config_id = str(uuid.uuid4())
+        await conn.execute(
+            """INSERT INTO node_configs (id, node_id, config_data, version, updated_at)
+               VALUES (?, ?, '{}', 1, ?)""",
+            (config_id, node_id, now),
+        )
+        await conn.execute(
+            "UPDATE nodes SET config_version = 1 WHERE id = ?",
+            (node_id,),
+        )
+
+        # 自动创建空策略记录，避免节点拉取策略时 404
+        policy_id = str(uuid.uuid4())
+        await conn.execute(
+            """INSERT INTO resource_policies (id, node_id, allowed_skills, allowed_mcp_servers, version, updated_at)
+               VALUES (?, ?, '[]', '[]', 1, ?)""",
+            (policy_id, node_id, now),
+        )
+        await conn.execute(
+            "UPDATE nodes SET policy_version = 1 WHERE id = ?",
+            (node_id,),
+        )
+
         await conn.commit()
 
         return {"node_id": node_id, "api_key": api_key}
@@ -139,6 +164,27 @@ async def verify_node_api_key(node_id: str, api_key: str) -> dict | None:
             "config_version, policy_version, last_report, created_at "
             "FROM nodes WHERE id = ? AND api_key_hash = ?",
             (node_id, api_key_hash),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return _row_to_node(row)
+    finally:
+        await conn.close()
+
+
+async def verify_node_api_key_only(api_key: str) -> dict | None:
+    """仅通过 API Key 查找节点（不需要 node_id），用于 Bearer token 认证"""
+    import hashlib
+    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest()
+
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT id, user_id, hostname, api_key_hash, status, last_heartbeat, "
+            "config_version, policy_version, last_report, created_at "
+            "FROM nodes WHERE api_key_hash = ?",
+            (api_key_hash,),
         )
         row = await cursor.fetchone()
         if not row:

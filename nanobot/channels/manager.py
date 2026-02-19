@@ -146,12 +146,18 @@ class ChannelManager:
 
     async def start_all(self) -> None:
         """Start all channels and the outbound dispatcher."""
-        if not self.channels:
+        if not self.channels and not self.bus._outbound_subscribers:
             logger.warning("No channels enabled")
             return
         
-        # Start outbound dispatcher
+        # Start outbound dispatcher (即使没有传统 channel，也需要分发给 subscriber)
         self._dispatch_task = asyncio.create_task(self._dispatch_outbound())
+        
+        if not self.channels:
+            logger.warning("No channels enabled")
+            # 保持 dispatcher 运行，等待 cancel
+            await asyncio.Future()
+            return
         
         # Start channels
         tasks = []
@@ -183,7 +189,7 @@ class ChannelManager:
                 logger.error(f"Error stopping {name}: {e}")
     
     async def _dispatch_outbound(self) -> None:
-        """Dispatch outbound messages to the appropriate channel."""
+        """Dispatch outbound messages to the appropriate channel or subscriber."""
         logger.info("Outbound dispatcher started")
         
         while True:
@@ -193,6 +199,7 @@ class ChannelManager:
                     timeout=1.0
                 )
                 
+                # 优先查找传统 channel
                 channel = self.channels.get(msg.channel)
                 if channel:
                     try:
@@ -200,7 +207,16 @@ class ChannelManager:
                     except Exception as e:
                         logger.error(f"Error sending to {msg.channel}: {e}")
                 else:
-                    logger.warning(f"Unknown channel: {msg.channel}")
+                    # 尝试通过 subscriber 机制分发（如 GatewayMessageClient）
+                    subscribers = self.bus._outbound_subscribers.get(msg.channel, [])
+                    if subscribers:
+                        for callback in subscribers:
+                            try:
+                                await callback(msg)
+                            except Exception as e:
+                                logger.error(f"Error dispatching to subscriber {msg.channel}: {e}")
+                    else:
+                        logger.warning(f"Unknown channel: {msg.channel}")
                     
             except asyncio.TimeoutError:
                 continue

@@ -405,6 +405,18 @@ class AgentLoop:
             chat_id=msg.chat_id,
         )
 
+        # 受管模式下注入策略约束，防止 agent 访问未授权的资源
+        if self._policy_enforcer is not None and initial_messages:
+            managed_hint = (
+                "\n\n## Managed Mode Policy"
+                "\nThis node is running in managed mode. You MUST only use the tools "
+                "currently registered and available to you. Do NOT attempt to connect to, "
+                "configure, or access any external services (MCP servers, APIs, etc.) "
+                "that are not in your tool list. If a user asks about a service you don't "
+                "have access to, tell them it's not available on this node."
+            )
+            initial_messages[0]["content"] += managed_hint
+
         async def _bus_progress(content: str) -> None:
             await self.bus.publish_outbound(OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content=content,

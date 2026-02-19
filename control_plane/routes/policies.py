@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from control_plane.auth import get_current_user, require_admin
+from control_plane.auth import get_current_user, get_current_user_or_node, require_admin
 from control_plane.configs import get_node_config, get_node_config_with_llm_key, update_node_config
 from control_plane.models import (
     MCPServerEntryCreate,
@@ -86,8 +86,8 @@ async def create_mcp_server_endpoint(
 # ── 节点策略 ──────────────────────────────────────────────────────
 
 @router.get("/api/nodes/{id}/policy", response_model=ResourcePolicyResponse)
-async def get_policy_endpoint(id: str, current_user: dict = Depends(get_current_user)):
-    """获取节点资源策略（需要节点访问权限）"""
+async def get_policy_endpoint(id: str, current_user: dict = Depends(get_current_user_or_node)):
+    """获取节点资源策略（支持 JWT 用户认证或节点 API Key 认证）"""
     await check_node_access(current_user, id)
     policy = await get_node_policy(id)
     if not policy:
@@ -115,8 +115,8 @@ async def update_policy_endpoint(
 # ── 节点配置 ──────────────────────────────────────────────────────
 
 @router.get("/api/nodes/{id}/config", response_model=NodeConfigResponse)
-async def get_config_endpoint(id: str, current_user: dict = Depends(get_current_user)):
-    """获取节点配置（需要节点访问权限），自动注入分配的 LLM Key"""
+async def get_config_endpoint(id: str, current_user: dict = Depends(get_current_user_or_node)):
+    """获取节点配置（支持 JWT 用户认证或节点 API Key 认证），自动注入分配的 LLM Key"""
     await check_node_access(current_user, id)
     config = await get_node_config_with_llm_key(id)
     if not config:

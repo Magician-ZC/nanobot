@@ -307,3 +307,88 @@ class RateLimitReport(BaseModel):
     """节点限流上报请求"""
     key_id: str
 
+
+
+# ── 飞书网关模型 ──────────────────────────────────────────────────
+
+class FeishuGatewayConfigCreate(BaseModel):
+    """设置飞书网关配置请求"""
+    app_id: str = Field(..., min_length=1)
+    app_secret: str = Field(..., min_length=1)
+    encrypt_key: str = ""
+    verification_token: str = ""
+
+
+class FeishuGatewayConfigResponse(BaseModel):
+    """飞书网关配置响应（凭证脱敏）"""
+    id: str
+    app_id: str
+    app_secret_preview: str
+    encrypt_key_preview: str
+    is_active: bool
+    created_at: str
+    updated_at: str
+
+
+class GatewayStatusResponse(BaseModel):
+    """飞书网关运行状态"""
+    is_connected: bool
+    connected_since: str | None = None
+    last_message_at: str | None = None
+    connected_nodes: int = 0
+    total_bindings: int = 0
+
+
+class BindingCreate(BaseModel):
+    """创建飞书用户绑定请求"""
+    feishu_open_id: str = Field(..., min_length=1)
+    node_id: str = Field(..., min_length=1)
+    feishu_name: str = ""
+
+
+class BindingResponse(BaseModel):
+    """飞书用户绑定响应"""
+    id: str
+    feishu_open_id: str
+    feishu_name: str
+    node_id: str
+    node_hostname: str = ""
+    created_at: str
+    updated_at: str
+
+
+class BindCodeCreate(BaseModel):
+    """生成绑定码请求"""
+    node_id: str = Field(..., min_length=1)
+    expires_minutes: int = Field(default=30, ge=1, le=1440)
+
+
+class BindCodeResponse(BaseModel):
+    """绑定码响应"""
+    id: str
+    code: str
+    node_id: str
+    is_used: bool
+    expires_at: str
+    created_at: str
+
+
+class ConversationMessageResponse(BaseModel):
+    """对话记录响应"""
+    id: str
+    feishu_open_id: str
+    node_id: str | None = None
+    direction: str
+    content: str
+    msg_type: str
+    status: str
+    created_at: str
+
+class SessionResponse(BaseModel):
+    """会话列表响应（按用户分组）"""
+    feishu_open_id: str
+    feishu_name: str = ""
+    message_count: int
+    last_message_at: str
+    node_id: str | None = None
+

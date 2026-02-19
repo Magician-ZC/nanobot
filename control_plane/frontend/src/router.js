@@ -7,6 +7,7 @@ import NodeDetail from './views/NodeDetail.vue'
 import Users from './views/Users.vue'
 import Tasks from './views/Tasks.vue'
 import TokenUsage from './views/TokenUsage.vue'
+import FeishuGateway from './views/FeishuGateway.vue'
 
 const routes = [
   { path: '/login', component: Login, meta: { public: true } },
@@ -15,6 +16,7 @@ const routes = [
   { path: '/users', component: Users },
   { path: '/tasks', component: Tasks },
   { path: '/token-usage', component: TokenUsage },
+  { path: '/feishu-gateway', component: FeishuGateway },
 ]
 
 const router = createRouter({

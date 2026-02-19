@@ -8,7 +8,7 @@ import aiosqlite
 DEFAULT_DB_PATH = Path("data/control_plane.db")
 
 # 当前 schema 版本
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 async def get_connection(db_path: Path | None = None) -> aiosqlite.Connection:
@@ -202,6 +202,72 @@ CREATE TABLE IF NOT EXISTS node_key_assignments (
 );
 """
 
+# ── Schema V2: 飞书共享网关表 ──────────────────────────────────────
+
+_FEISHU_GATEWAY_CONFIG_TABLE = """
+CREATE TABLE IF NOT EXISTS feishu_gateway_config (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL,
+    app_secret_encrypted TEXT NOT NULL,
+    encrypt_key TEXT DEFAULT '',
+    verification_token TEXT DEFAULT '',
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_FEISHU_USER_BINDINGS_TABLE = """
+CREATE TABLE IF NOT EXISTS feishu_user_bindings (
+    id TEXT PRIMARY KEY,
+    feishu_open_id TEXT UNIQUE NOT NULL,
+    feishu_name TEXT DEFAULT '',
+    node_id TEXT NOT NULL REFERENCES nodes(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_FEISHU_BIND_CODES_TABLE = """
+CREATE TABLE IF NOT EXISTS feishu_bind_codes (
+    id TEXT PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    node_id TEXT NOT NULL REFERENCES nodes(id),
+    is_used INTEGER DEFAULT 0,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_FEISHU_CONVERSATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS feishu_conversations (
+    id TEXT PRIMARY KEY,
+    feishu_open_id TEXT NOT NULL,
+    node_id TEXT,
+    direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+    content TEXT NOT NULL,
+    msg_type TEXT DEFAULT 'text',
+    status TEXT DEFAULT 'delivered' CHECK (status IN ('pending', 'delivered', 'failed')),
+    feishu_message_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_V2_TABLES = [
+    _FEISHU_GATEWAY_CONFIG_TABLE,
+    _FEISHU_USER_BINDINGS_TABLE,
+    _FEISHU_BIND_CODES_TABLE,
+    _FEISHU_CONVERSATIONS_TABLE,
+]
+
+_V2_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_bindings_open_id ON feishu_user_bindings(feishu_open_id);",
+    "CREATE INDEX IF NOT EXISTS idx_bind_codes_code ON feishu_bind_codes(code);",
+    "CREATE INDEX IF NOT EXISTS idx_conversations_open_id ON feishu_conversations(feishu_open_id);",
+    "CREATE INDEX IF NOT EXISTS idx_conversations_node_id ON feishu_conversations(node_id);",
+    "CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON feishu_conversations(created_at);",
+]
+
 # V1 所有建表语句，按依赖顺序排列
 _V1_TABLES = [
     _USERS_TABLE,
@@ -262,9 +328,18 @@ async def _apply_v1(conn: aiosqlite.Connection) -> None:
         await conn.execute(index_sql)
 
 
+async def _apply_v2(conn: aiosqlite.Connection) -> None:
+    """应用 V2 schema：创建飞书共享网关相关表和索引"""
+    for table_sql in _V2_TABLES:
+        await conn.execute(table_sql)
+    for index_sql in _V2_INDEXES:
+        await conn.execute(index_sql)
+
+
 # 迁移注册表：版本号 -> 迁移函数
 _MIGRATIONS: dict[int, callable] = {
     1: _apply_v1,
+    2: _apply_v2,
 }
 
 

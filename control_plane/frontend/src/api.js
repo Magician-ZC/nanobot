@@ -177,3 +177,41 @@ export const tokenUsage = {
   },
 }
 
+// ── Feishu Gateway API ──
+export const feishuGateway = {
+  // 配置
+  getConfig: () => request('/api/gateway/config'),
+  saveConfig: (data) =>
+    request('/api/gateway/config', { method: 'POST', body: JSON.stringify(data) }),
+  getStatus: () => request('/api/gateway/status'),
+  start: () => request('/api/gateway/start', { method: 'POST' }),
+  stop: () => request('/api/gateway/stop', { method: 'POST' }),
+  // 绑定
+  listBindings: (nodeId) => {
+    const url = nodeId ? `/api/gateway/bindings?node_id=${nodeId}` : '/api/gateway/bindings'
+    return request(url)
+  },
+  createBinding: (data) =>
+    request('/api/gateway/bindings', { method: 'POST', body: JSON.stringify(data) }),
+  deleteBinding: (id) =>
+    request(`/api/gateway/bindings/${id}`, { method: 'DELETE' }),
+  // 绑定码
+  listBindCodes: (nodeId) => {
+    const url = nodeId ? `/api/gateway/bind-codes?node_id=${nodeId}` : '/api/gateway/bind-codes'
+    return request(url)
+  },
+  createBindCode: (data) =>
+    request('/api/gateway/bind-codes', { method: 'POST', body: JSON.stringify(data) }),
+  // 对话记录
+  listSessions: (nodeId) => {
+    const url = nodeId ? `/api/gateway/sessions?node_id=${nodeId}` : '/api/gateway/sessions'
+    return request(url)
+  },
+  listConversations: (params = {}) => {
+    const qs = new URLSearchParams(params).toString()
+    return request(`/api/gateway/conversations${qs ? '?' + qs : ''}`)
+  },
+  getConversation: (openId, limit = 50) =>
+    request(`/api/gateway/conversations/${openId}?limit=${limit}`),
+}
+
