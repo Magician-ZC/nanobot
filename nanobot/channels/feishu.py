@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import re
 import threading
 from collections import OrderedDict
@@ -17,6 +18,8 @@ from nanobot.config.schema import FeishuConfig
 try:
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import (
+        CreateFileRequest,
+        CreateFileRequestBody,
         CreateImageRequest,
         CreateImageRequestBody,
         CreateMessageRequest,
@@ -259,7 +262,6 @@ class FeishuChannel(BaseChannel):
             before = protected[last_end:m.start()].strip()
             if before:
                 elements.append({"tag": "markdown", "content": before})
-            level = len(m.group(1))
             text = m.group(2).strip()
             elements.append({
                 "tag": "div",
@@ -280,115 +282,141 @@ class FeishuChannel(BaseChannel):
 
         return elements or [{"tag": "markdown", "content": content}]
 
-    async def send(self, msg: OutboundMessage) -> None:
-        """Send a message through Feishu, with optional media attachments."""
-        if not self._client:
-            logger.warning("Feishu client not initialized")
-            return
-
-        try:
-            # Determine receive_id_type based on chat_id format
-            if msg.chat_id.startswith("oc_"):
-                receive_id_type = "chat_id"
-            else:
-                receive_id_type = "open_id"
-
-            logger.debug(f"Feishu send: content_len={len(msg.content or '')}, media={msg.media}")
-
-            # 发送文本内容（卡片消息）
-            if msg.content and msg.content.strip():
-                elements = self._build_card_elements(msg.content)
-                card = {
-                    "config": {"wide_screen_mode": True},
-                    "elements": elements,
-                }
-                content = json.dumps(card, ensure_ascii=False)
-                await self._send_raw_message(receive_id_type, msg.chat_id, "interactive", content)
-
-            # 发送媒体文件
-            for media_path in (msg.media or []):
-                logger.info(f"Sending media: {media_path}")
-                await self._send_media(receive_id_type, msg.chat_id, media_path)
-
-        except Exception as e:
-            logger.error(f"Error sending Feishu message: {e}")
-
     # 图片扩展名
-    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+    _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".ico", ".tiff", ".tif"}
+    # 音频扩展名
+    _AUDIO_EXTS = {".opus"}
     # 视频扩展名
     _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv"}
     # 飞书文件类型映射
     _FILE_TYPE_MAP = {
         ".opus": "opus", ".mp3": "mp3", ".ogg": "opus",
-        ".pdf": "pdf", ".doc": "doc", ".docx": "doc",
+        ".mp4": "mp4", ".pdf": "pdf", ".doc": "doc", ".docx": "doc",
         ".xls": "xls", ".xlsx": "xls", ".ppt": "ppt", ".pptx": "ppt",
     }
 
-    async def _send_raw_message(self, receive_id_type: str, chat_id: str, msg_type: str, content: str) -> bool:
-        """Send a raw message to Feishu. Returns True on success."""
-        request = CreateMessageRequest.builder() \
-            .receive_id_type(receive_id_type) \
-            .request_body(
-                CreateMessageRequestBody.builder()
-                .receive_id(chat_id)
-                .msg_type(msg_type)
-                .content(content)
-                .build()
-            ).build()
+    def _upload_image_sync(self, file_path: str) -> str | None:
+        """Upload an image to Feishu and return the image_key."""
+        try:
+            with open(file_path, "rb") as f:
+                request = CreateImageRequest.builder() \
+                    .request_body(
+                        CreateImageRequestBody.builder()
+                        .image_type("message")
+                        .image(f)
+                        .build()
+                    ).build()
+                response = self._client.im.v1.image.create(request)
+                if response.success():
+                    image_key = response.data.image_key
+                    logger.debug(f"Uploaded image {os.path.basename(file_path)}: {image_key}")
+                    return image_key
+                else:
+                    logger.error(f"Failed to upload image: code={response.code}, msg={response.msg}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error uploading image {file_path}: {e}")
+            return None
 
-        loop = asyncio.get_running_loop()
-        response = await loop.run_in_executor(None, self._client.im.v1.message.create, request)
+    def _upload_file_sync(self, file_path: str) -> str | None:
+        """Upload a file to Feishu and return the file_key."""
+        ext = os.path.splitext(file_path)[1].lower()
+        file_type = self._FILE_TYPE_MAP.get(ext, "stream")
+        file_name = os.path.basename(file_path)
+        try:
+            with open(file_path, "rb") as f:
+                request = CreateFileRequest.builder() \
+                    .request_body(
+                        CreateFileRequestBody.builder()
+                        .file_type(file_type)
+                        .file_name(file_name)
+                        .file(f)
+                        .build()
+                    ).build()
+                response = self._client.im.v1.file.create(request)
+                if response.success():
+                    file_key = response.data.file_key
+                    logger.debug(f"Uploaded file {file_name}: {file_key}")
+                    return file_key
+                else:
+                    logger.error(f"Failed to upload file: code={response.code}, msg={response.msg}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error uploading file {file_path}: {e}")
+            return None
 
-        if not response.success():
-            logger.error(
-                f"Failed to send Feishu message: code={response.code}, "
-                f"msg={response.msg}, log_id={response.get_log_id()}"
-            )
+    def _send_message_sync(self, receive_id_type: str, receive_id: str, msg_type: str, content: str) -> bool:
+        """Send a single message (text/image/file/interactive) synchronously."""
+        try:
+            request = CreateMessageRequest.builder() \
+                .receive_id_type(receive_id_type) \
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(receive_id)
+                    .msg_type(msg_type)
+                    .content(content)
+                    .build()
+                ).build()
+            response = self._client.im.v1.message.create(request)
+            if not response.success():
+                logger.error(
+                    f"Failed to send Feishu {msg_type} message: code={response.code}, "
+                    f"msg={response.msg}, log_id={response.get_log_id()}"
+                )
+                return False
+            logger.debug(f"Feishu {msg_type} message sent to {receive_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending Feishu {msg_type} message: {e}")
             return False
-        logger.debug(f"Feishu message sent to {chat_id}")
-        return True
 
-    async def _send_media(self, receive_id_type: str, chat_id: str, media_path: str) -> None:
-        """Upload and send a media file (image/video/file) to Feishu."""
-        from pathlib import Path
-
-        # URL 类型：下载后作为图片上传
-        if media_path.startswith(("https://", "http://")):
-            await self._send_remote_image(receive_id_type, chat_id, media_path)
+    async def send(self, msg: OutboundMessage) -> None:
+        """Send a message through Feishu, including media (images/files) if present."""
+        if not self._client:
+            logger.warning("Feishu client not initialized")
             return
 
-        file_path = Path(media_path)
-        if not file_path.is_file():
-            logger.warning(f"Media file not found: {media_path}")
-            return
+        try:
+            receive_id_type = "chat_id" if msg.chat_id.startswith("oc_") else "open_id"
+            loop = asyncio.get_running_loop()
 
-        ext = file_path.suffix.lower()
-        loop = asyncio.get_running_loop()
+            # 先发送媒体文件
+            for file_path in (msg.media or []):
+                # URL 类型：下载后作为图片上传
+                if file_path.startswith(("https://", "http://")):
+                    await self._send_remote_image(receive_id_type, msg.chat_id, file_path)
+                    continue
 
-        # 图片
-        if ext in self._IMAGE_EXTS:
-            image_key = await self._upload_image(file_path, loop)
-            if image_key:
-                content = json.dumps({"image_key": image_key}, ensure_ascii=False)
-                await self._send_raw_message(receive_id_type, chat_id, "image", content)
-            return
+                if not os.path.isfile(file_path):
+                    logger.warning(f"Media file not found: {file_path}")
+                    continue
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in self._IMAGE_EXTS:
+                    key = await loop.run_in_executor(None, self._upload_image_sync, file_path)
+                    if key:
+                        await loop.run_in_executor(
+                            None, self._send_message_sync,
+                            receive_id_type, msg.chat_id, "image", json.dumps({"image_key": key}),
+                        )
+                else:
+                    key = await loop.run_in_executor(None, self._upload_file_sync, file_path)
+                    if key:
+                        media_type = "audio" if ext in self._AUDIO_EXTS else "file"
+                        await loop.run_in_executor(
+                            None, self._send_message_sync,
+                            receive_id_type, msg.chat_id, media_type, json.dumps({"file_key": key}),
+                        )
 
-        # 视频 / 其他文件 → 通过 file API 上传后发送
-        file_type = self._FILE_TYPE_MAP.get(ext)
-        if ext in self._VIDEO_EXTS:
-            file_type = "mp4"
+            # 再发送文本内容（卡片消息）
+            if msg.content and msg.content.strip():
+                card = {"config": {"wide_screen_mode": True}, "elements": self._build_card_elements(msg.content)}
+                await loop.run_in_executor(
+                    None, self._send_message_sync,
+                    receive_id_type, msg.chat_id, "interactive", json.dumps(card, ensure_ascii=False),
+                )
 
-        if file_type:
-            file_key = await self._upload_file(file_path, file_type, loop)
-            if file_key:
-                content = json.dumps({"file_key": file_key}, ensure_ascii=False)
-                await self._send_raw_message(receive_id_type, chat_id, "file", content)
-        else:
-            # 未知类型，尝试作为通用文件上传
-            file_key = await self._upload_file(file_path, "stream", loop)
-            if file_key:
-                content = json.dumps({"file_key": file_key}, ensure_ascii=False)
-                await self._send_raw_message(receive_id_type, chat_id, "file", content)
+        except Exception as e:
+            logger.error(f"Error sending Feishu message: {e}")
 
     async def _send_remote_image(self, receive_id_type: str, chat_id: str, url: str) -> None:
         """Download a remote image and send it as a Feishu image message."""
@@ -414,72 +442,29 @@ class FeishuChannel(BaseChannel):
                 tmp.write(resp.content)
                 tmp_path = Path(tmp.name)
 
-            loop = asyncio.get_running_loop()
-            image_key = await self._upload_image(tmp_path, loop)
+            image_key = await asyncio.get_running_loop().run_in_executor(
+                None, self._upload_image_sync, str(tmp_path)
+            )
             if image_key:
-                content = json.dumps({"image_key": image_key}, ensure_ascii=False)
-                await self._send_raw_message(receive_id_type, chat_id, "image", content)
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._send_message_sync,
+                    receive_id_type, chat_id, "image", json.dumps({"image_key": image_key}),
+                )
             else:
                 # 上传失败，回退为链接文本
-                content = json.dumps({"text": url}, ensure_ascii=False)
-                await self._send_raw_message(receive_id_type, chat_id, "text", content)
+                await asyncio.get_running_loop().run_in_executor(
+                    None, self._send_message_sync,
+                    receive_id_type, chat_id, "text", json.dumps({"text": url}),
+                )
 
             tmp_path.unlink(missing_ok=True)
         except Exception as e:
             logger.error(f"Failed to download/send remote image {url}: {e}")
-            content = json.dumps({"text": url}, ensure_ascii=False)
-            await self._send_raw_message(receive_id_type, chat_id, "text", content)
-
-    async def _upload_image(self, file_path: "Path", loop) -> str | None:
-        """Upload an image to Feishu, return image_key or None."""
-        try:
-            with open(file_path, "rb") as f:
-                request = CreateImageRequest.builder() \
-                    .request_body(
-                        CreateImageRequestBody.builder()
-                        .image_type("message")
-                        .image(f)
-                        .build()
-                    ).build()
-
-                response = await loop.run_in_executor(None, self._client.im.v1.image.create, request)
-
-            if response.success():
-                logger.debug(f"Image uploaded: {response.data.image_key}")
-                return response.data.image_key
-            else:
-                logger.error(f"Failed to upload image: code={response.code}, msg={response.msg}")
-                return None
-        except Exception as e:
-            logger.error(f"Error uploading image {file_path}: {e}")
-            return None
-
-    async def _upload_file(self, file_path: "Path", file_type: str, loop) -> str | None:
-        """Upload a file to Feishu, return file_key or None."""
-        try:
-            from lark_oapi.api.im.v1 import CreateFileRequest, CreateFileRequestBody
-
-            with open(file_path, "rb") as f:
-                request = CreateFileRequest.builder() \
-                    .request_body(
-                        CreateFileRequestBody.builder()
-                        .file_type(file_type)
-                        .file_name(file_path.name)
-                        .file(f)
-                        .build()
-                    ).build()
-
-                response = await loop.run_in_executor(None, self._client.im.v1.file.create, request)
-
-            if response.success():
-                logger.debug(f"File uploaded: {response.data.file_key}")
-                return response.data.file_key
-            else:
-                logger.error(f"Failed to upload file: code={response.code}, msg={response.msg}")
-                return None
-        except Exception as e:
-            logger.error(f"Error uploading file {file_path}: {e}")
-            return None
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, self._send_message_sync,
+                receive_id_type, chat_id, "text", json.dumps({"text": url}),
+            )
     
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """
