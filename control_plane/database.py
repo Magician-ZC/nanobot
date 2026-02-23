@@ -1,11 +1,12 @@
 """SQLite 数据库连接和迁移管理"""
 
+import os
 from pathlib import Path
 
 import aiosqlite
 
-# 默认数据库路径
-DEFAULT_DB_PATH = Path("data/control_plane.db")
+# 默认数据库路径（可通过 CP_DB_PATH 环境变量覆盖）
+DEFAULT_DB_PATH = Path(os.environ.get("CP_DB_PATH", "data/control_plane.db"))
 
 # 当前 schema 版本
 CURRENT_SCHEMA_VERSION = 2

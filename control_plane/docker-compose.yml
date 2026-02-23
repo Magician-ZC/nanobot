@@ -1,0 +1,26 @@
+# 使用方式：在 control_plane/ 的父目录执行 docker compose -f control_plane/docker-compose.yml up -d
+# 或将 control_plane/ 拷贝到独立目录后，在其父目录执行
+
+services:
+  control-plane:
+    container_name: nanobot-control-plane
+    build:
+      context: ..
+      dockerfile: control_plane/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${CP_PORT:-8080}:8080"
+    volumes:
+      - cp-data:/app/data
+    environment:
+      - CP_JWT_SECRET=${CP_JWT_SECRET:-change-me}
+      - CP_DB_PATH=${CP_DB_PATH:-data/control_plane.db}
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+
+volumes:
+  cp-data:
+    driver: local

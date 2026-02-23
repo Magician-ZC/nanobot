@@ -1,5 +1,6 @@
 """用户管理和 JWT 认证模块"""
 
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -10,8 +11,10 @@ from jose import JWTError, jwt
 
 from control_plane.database import get_connection, DEFAULT_DB_PATH
 
-# JWT 配置
-SECRET_KEY = "nanobot-control-plane-secret-key-change-in-production"
+# JWT 配置（生产环境通过 CP_JWT_SECRET 环境变量设置）
+SECRET_KEY = os.environ.get(
+    "CP_JWT_SECRET", "nanobot-control-plane-secret-key-change-in-production"
+)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 

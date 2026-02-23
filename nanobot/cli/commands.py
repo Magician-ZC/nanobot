@@ -1347,35 +1347,6 @@ def _register_login(name: str):
     return decorator
 
 
-@app.command("control-plane")
-def control_plane(
-    host: str = typer.Option("0.0.0.0", "--host", "-h", help="监听地址"),
-    port: int = typer.Option(8080, "--port", "-p", help="监听端口"),
-    db_path: str = typer.Option(None, "--db", help="数据库文件路径（默认 data/control_plane.db）"),
-):
-    """启动 Control Plane 管理服务。"""
-    try:
-        import uvicorn
-        from control_plane.app import create_app
-    except ImportError:
-        console.print(
-            "[red]缺少 control-plane 依赖，请安装：[/red]\n"
-            "  pip install nanobot-ai[control-plane]"
-        )
-        raise typer.Exit(1)
-
-    from pathlib import Path as _Path
-
-    _db = _Path(db_path) if db_path else None
-    app_instance = create_app(db_path=_db)
-
-    console.print(f"{__logo__} 启动 Control Plane 服务...")
-    console.print(f"  地址: http://{host}:{port}")
-    console.print(f"  数据库: {db_path or 'data/control_plane.db'}")
-
-    uvicorn.run(app_instance, host=host, port=port, log_level="info")
-
-
 @provider_app.command("login")
 def provider_login(
     provider: str = typer.Argument(..., help="OAuth provider (e.g. 'openai-codex', 'github-copilot')"),
