@@ -4,6 +4,7 @@ import asyncio
 from contextlib import AsyncExitStack
 from typing import Any
 
+import httpx
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool
@@ -13,12 +14,13 @@ from nanobot.agent.tools.registry import ToolRegistry
 class MCPToolWrapper(Tool):
     """Wraps a single MCP server tool as a nanobot Tool."""
 
-    def __init__(self, session, server_name: str, tool_def):
+    def __init__(self, session, server_name: str, tool_def, tool_timeout: int = 30):
         self._session = session
         self._original_name = tool_def.name
         self._name = f"mcp_{server_name}_{tool_def.name}"
         self._description = tool_def.description or tool_def.name
         self._parameters = tool_def.inputSchema or {"type": "object", "properties": {}}
+        self._tool_timeout = tool_timeout
 
     @property
     def name(self) -> str:
@@ -34,7 +36,14 @@ class MCPToolWrapper(Tool):
 
     async def execute(self, **kwargs: Any) -> str:
         from mcp import types
-        result = await self._session.call_tool(self._original_name, arguments=kwargs)
+        try:
+            result = await asyncio.wait_for(
+                self._session.call_tool(self._original_name, arguments=kwargs),
+                timeout=self._tool_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("MCP tool '{}' timed out after {}s", self._name, self._tool_timeout)
+            return f"(MCP tool call timed out after {self._tool_timeout}s)"
         parts = []
         for block in result.content:
             if isinstance(block, types.TextContent):
@@ -42,14 +51,6 @@ class MCPToolWrapper(Tool):
             else:
                 parts.append(str(block))
         return "\n".join(parts) or "(no output)"
-
-
-async def _safe_close_stack(stack: AsyncExitStack, server_name: str) -> None:
-    """安全关闭 AsyncExitStack，捕获 cancel scope 跨 task 等清理异常"""
-    try:
-        await stack.aclose()
-    except (RuntimeError, BaseExceptionGroup, Exception) as e:
-        logger.debug(f"MCP server '{server_name}': cleanup error (ignored): {e}")
 
 
 async def connect_mcp_servers(
@@ -61,50 +62,40 @@ async def connect_mcp_servers(
 
     for name, cfg in mcp_servers.items():
         try:
-            logger.debug(f"MCP server '{name}': command={cfg.command}, args={cfg.args}, env_keys={list(cfg.env.keys()) if cfg.env else None}")
-            
-            # 使用独立的 exit stack 隔离每个 server 的连接，
-            # 防止单个 server 连接失败的 cancel scope 污染主 stack
-            server_stack = AsyncExitStack()
-            connected = False
-            
-            try:
-                if cfg.command and cfg.command.strip():
-                    merged_env = None
-                    if cfg.env:
-                        import os
-                        merged_env = {**os.environ, **cfg.env}
-                    params = StdioServerParameters(
-                        command=cfg.command, args=cfg.args, env=merged_env
+            if cfg.command:
+                params = StdioServerParameters(
+                    command=cfg.command, args=cfg.args, env=cfg.env or None
+                )
+                read, write = await stack.enter_async_context(stdio_client(params))
+            elif cfg.url:
+                from mcp.client.streamable_http import streamable_http_client
+                if cfg.headers:
+                    http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(
+                            headers=cfg.headers,
+                            follow_redirects=True
+                        )
                     )
-                    read, write = await server_stack.enter_async_context(stdio_client(params))
-                    connected = True
-                elif cfg.url:
-                    from mcp.client.streamable_http import streamable_http_client
-                    read, write, _ = await server_stack.enter_async_context(
+                    read, write, _ = await stack.enter_async_context(
+                        streamable_http_client(cfg.url, http_client=http_client)
+                    )
+                else:
+                    read, write, _ = await stack.enter_async_context(
                         streamable_http_client(cfg.url)
                     )
-                    connected = True
-                else:
-                    logger.warning(f"MCP server '{name}': no command or url configured, skipping")
-                    await _safe_close_stack(server_stack, name)
-                    continue
-            except (Exception, asyncio.CancelledError, BaseExceptionGroup) as e:
-                logger.error(f"MCP server '{name}': failed to start: {e}")
-                await _safe_close_stack(server_stack, name)
+            else:
+                logger.warning("MCP server '{}': no command or url configured, skipping", name)
                 continue
 
-            session = await server_stack.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
 
             tools = await session.list_tools()
             for tool_def in tools.tools:
-                wrapper = MCPToolWrapper(session, name, tool_def)
+                wrapper = MCPToolWrapper(session, name, tool_def, tool_timeout=cfg.tool_timeout)
                 registry.register(wrapper)
-                logger.debug(f"MCP: registered tool '{wrapper.name}' from server '{name}'")
+                logger.debug("MCP: registered tool '{}' from server '{}'", wrapper.name, name)
 
-            # 连接成功，将 server_stack 托管到主 stack
-            await stack.enter_async_context(server_stack)
-            logger.info(f"MCP server '{name}': connected, {len(tools.tools)} tools registered")
-        except (Exception, asyncio.CancelledError, BaseExceptionGroup) as e:
-            logger.error(f"MCP server '{name}': failed to connect: {e}")
+            logger.info("MCP server '{}': connected, {} tools registered", name, len(tools.tools))
+        except Exception as e:
+            logger.error("MCP server '{}': failed to connect: {}", name, e)

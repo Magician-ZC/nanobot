@@ -82,12 +82,7 @@ Skills with available="false" need dependencies installed first - you can try in
         
         return f"""# nanobot 🐈
 
-You are nanobot, a helpful AI assistant. You have access to tools that allow you to:
-- Read, write, and edit files
-- Execute shell commands
-- Search the web and fetch web pages
-- Send messages to users on chat channels
-- Spawn subagents for complex background tasks
+You are nanobot, a helpful AI assistant. 
 
 ## Current Time
 {now} ({tz})
@@ -101,23 +96,18 @@ Your workspace is at: {workspace_path}
 - History log: {workspace_path}/memory/HISTORY.md (grep-searchable)
 - Custom skills: {workspace_path}/skills/{{skill-name}}/SKILL.md
 
-IMPORTANT: When responding to direct questions or conversations, reply directly with your text response.
-Only use the 'message' tool when you need to send a message to a specific chat channel (like WhatsApp).
-For normal conversation, just respond with text - do not call the message tool.
+Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.
 
-## Sending Media Files
-When you need to send an image, video, or file to the user, use the MEDIA tag on a separate line:
-    MEDIA:/path/to/file.png
-    MEDIA:./relative/file.pdf
-    MEDIA:https://example.com/image.jpg
-The MEDIA tag will be parsed and the file will be uploaded and sent through the chat channel.
-You can include multiple MEDIA tags. Combine text and media freely:
-    Here is the screenshot you requested.
-    MEDIA:/path/to/screenshot.png
+## Tool Call Guidelines
+- Before calling tools, you may briefly state your intent (e.g. "Let me check that"), but NEVER predict or describe the expected result before receiving it.
+- Before modifying a file, read it first to confirm its current content.
+- Do not assume a file or directory exists — use list_dir or read_file to verify.
+- After writing or editing a file, re-read it if accuracy matters.
+- If a tool call fails, analyze the error before retrying with a different approach.
 
-Always be helpful, accurate, and concise. Before calling tools, briefly tell the user what you're about to do (one short sentence in the user's language).
-When remembering something important, write to {workspace_path}/memory/MEMORY.md
-To recall past events, grep {workspace_path}/memory/HISTORY.md"""
+## Memory
+- Remember important facts: write to {workspace_path}/memory/MEMORY.md
+- Recall past events: grep {workspace_path}/memory/HISTORY.md"""
     
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
@@ -237,15 +227,15 @@ To recall past events, grep {workspace_path}/memory/HISTORY.md"""
         """
         msg: dict[str, Any] = {"role": "assistant"}
 
-        # Omit empty content — some backends reject empty text blocks
-        if content:
-            msg["content"] = content
+        # Always include content — some providers (e.g. StepFun) reject
+        # assistant messages that omit the key entirely.
+        msg["content"] = content
 
         if tool_calls:
             msg["tool_calls"] = tool_calls
 
         # Include reasoning content when provided (required by some thinking models)
-        if reasoning_content:
+        if reasoning_content is not None:
             msg["reasoning_content"] = reasoning_content
 
         messages.append(msg)
