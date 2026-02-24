@@ -107,6 +107,10 @@ def _mount_frontend(app: FastAPI) -> None:
     # SPA 路由回退：非 /api 路径都返回 index.html
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
+        # /api 开头的路径不走 SPA 回退
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="API not found")
         # 尝试返回静态文件
         file_path = static_dir / full_path
         if full_path and file_path.is_file():

@@ -548,3 +548,49 @@ async def get_usage_summary(
     finally:
         await conn.close()
 
+async def get_usage_by_node(
+    key_id: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+) -> list[dict]:
+    """按节点汇总 Token 用量"""
+    conn = await get_connection()
+    try:
+        query = """SELECT tu.node_id, n.hostname,
+                          COALESCE(SUM(tu.prompt_tokens), 0),
+                          COALESCE(SUM(tu.completion_tokens), 0),
+                          COALESCE(SUM(tu.total_tokens), 0),
+                          COUNT(*)
+                   FROM token_usage tu
+                   LEFT JOIN nodes n ON tu.node_id = n.id
+                   WHERE 1=1"""
+        params: list = []
+        if key_id:
+            query += " AND tu.key_id = ?"
+            params.append(key_id)
+        if start_time:
+            query += " AND tu.timestamp >= ?"
+            params.append(start_time)
+        if end_time:
+            query += " AND tu.timestamp <= ?"
+            params.append(end_time)
+        query += " GROUP BY tu.node_id ORDER BY SUM(tu.total_tokens) DESC"
+
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return [
+            {
+                "node_id": r[0],
+                "hostname": r[1] or r[0][:8],
+                "prompt_tokens": r[2],
+                "completion_tokens": r[3],
+                "total_tokens": r[4],
+                "record_count": r[5],
+            }
+            for r in rows
+        ]
+    finally:
+        await conn.close()
+
+
+

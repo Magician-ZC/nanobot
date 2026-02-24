@@ -11,7 +11,6 @@
         <router-link to="/mcp-servers" v-if="isAdmin">MCP Server</router-link>
         <router-link to="/users" v-if="isAdmin">用户管理</router-link>
         <router-link to="/tasks">任务监控</router-link>
-        <router-link to="/token-usage">Token 用量</router-link>
         <router-link to="/feishu-gateway" v-if="isAdmin">飞书网关</router-link>
         <span class="nav-user">{{ userRole }}</span>
         <button class="btn btn-small btn-danger" @click="logout">退出</button>

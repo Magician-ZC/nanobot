@@ -96,6 +96,15 @@ class SkillEntryResponse(BaseModel):
     created_at: str
 
 
+class SkillEntryUpdate(BaseModel):
+    """更新 Skill 请求"""
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = None
+    source: str | None = Field(default=None, pattern=r"^(builtin|workspace|custom)$")
+
+
+
+
 class SkillPackageResponse(BaseModel):
     """Skill 包上传响应"""
     skill_id: str
@@ -140,6 +149,16 @@ class MCPServerEntryResponse(BaseModel):
     config: dict
     description: str
     created_at: str
+
+
+class MCPServerEntryUpdate(BaseModel):
+    """更新 MCP Server 请求"""
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    connection_type: str | None = Field(default=None, pattern=r"^(stdio|http)$")
+    config: dict | None = None
+    description: str | None = None
+
+
 
 
 # ── Resource Policy 模型 ───────────────────────────────────────────

@@ -2,13 +2,13 @@
   <div>
     <div class="page-header">
       <h2>MCP Server 注册表</h2>
-      <button class="btn btn-primary" @click="showAdd = true">注册 MCP Server</button>
+      <button class="btn btn-primary" @click="openAdd">注册 MCP Server</button>
     </div>
 
-    <!-- 添加对话框 -->
-    <div v-if="showAdd" class="modal-overlay" @click.self="closeForm">
+    <!-- 添加/编辑对话框 -->
+    <div v-if="showForm" class="modal-overlay" @click.self="closeForm">
       <div class="modal-card">
-        <h3>注册新 MCP Server</h3>
+        <h3>{{ editingServer ? '编辑 MCP Server' : '注册新 MCP Server' }}</h3>
         <div class="form-group">
           <label>名称</label>
           <input v-model="form.name" placeholder="如: my-mcp-server" />
@@ -54,9 +54,15 @@
           <input v-model="form.description" placeholder="MCP Server 功能描述" />
         </div>
         <p v-if="formError" class="error-msg">{{ formError }}</p>
+        <p v-if="testResult" :class="testResult.success ? 'test-ok' : 'test-fail'">
+          {{ testResult.message }}
+        </p>
         <div class="form-actions">
           <button class="btn btn-primary" @click="submitForm" :disabled="submitting">
             {{ submitting ? '提交中...' : '确定' }}
+          </button>
+          <button class="btn btn-test" @click="testConnection" :disabled="testing">
+            {{ testing ? '测试中...' : '测试连接' }}
           </button>
           <button class="btn" @click="closeForm">取消</button>
         </div>
@@ -74,6 +80,7 @@
             <th>配置摘要</th>
             <th>描述</th>
             <th>创建时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -83,6 +90,18 @@
             <td><code>{{ configSummary(s) }}</code></td>
             <td>{{ s.description || '-' }}</td>
             <td>{{ formatTime(s.created_at) }}</td>
+            <td class="action-cell">
+              <div class="action-buttons">
+                <button class="btn btn-small btn-test" @click="testExisting(s)" :disabled="s._testing">
+                  {{ s._testing ? '...' : '测试' }}
+                </button>
+                <button class="btn btn-small btn-primary" @click="startEdit(s)">编辑</button>
+                <button class="btn btn-small btn-danger" @click="removeServer(s)">删除</button>
+              </div>
+              <div v-if="s._testResult" :class="['test-result', s._testResult.success ? 'test-ok' : 'test-fail']">
+                {{ s._testResult.message }}
+              </div>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -99,29 +118,61 @@ export default {
     return {
       servers: [],
       loading: true,
-      showAdd: false,
+      showForm: false,
+      editingServer: null,
       form: { name: '', connection_type: 'stdio', description: '' },
       stdioForm: { command: '', args: '', env: '' },
       httpForm: { url: '', headers: '' },
       formError: '',
       submitting: false,
+      testing: false,
+      testResult: null,
     }
   },
   methods: {
     async fetchData() {
-      try { this.servers = await mcpServers.list() }
+      try {
+        const list = await mcpServers.list()
+        this.servers = list.map(s => ({ ...s, _testing: false, _testResult: null }))
+      }
       catch { /* keep last */ }
       finally { this.loading = false }
     },
-    onTypeChange() {
+    resetSubForms() {
       this.stdioForm = { command: '', args: '', env: '' }
       this.httpForm = { url: '', headers: '' }
     },
-    closeForm() {
-      this.showAdd = false
+    onTypeChange() { this.resetSubForms() },
+    openAdd() {
+      this.editingServer = null
       this.form = { name: '', connection_type: 'stdio', description: '' }
-      this.onTypeChange()
+      this.resetSubForms()
       this.formError = ''
+      this.showForm = true
+    },
+    startEdit(s) {
+      this.editingServer = s
+      this.form = { name: s.name, connection_type: s.connection_type, description: s.description || '' }
+      this.resetSubForms()
+      const c = s.config || {}
+      if (s.connection_type === 'stdio') {
+        this.stdioForm.command = c.command || ''
+        this.stdioForm.args = (c.args || []).join(', ')
+        this.stdioForm.env = c.env ? JSON.stringify(c.env) : ''
+      } else {
+        this.httpForm.url = c.url || ''
+        this.httpForm.headers = c.headers ? JSON.stringify(c.headers) : ''
+      }
+      this.formError = ''
+      this.showForm = true
+    },
+    closeForm() {
+      this.showForm = false
+      this.editingServer = null
+      this.form = { name: '', connection_type: 'stdio', description: '' }
+      this.resetSubForms()
+      this.formError = ''
+      this.testResult = null
     },
     buildConfig() {
       if (this.form.connection_type === 'stdio') {
@@ -157,17 +208,60 @@ export default {
 
       this.submitting = true
       try {
-        await mcpServers.create({
+        const data = {
           name: this.form.name,
           connection_type: this.form.connection_type,
           config,
           description: this.form.description,
-        })
+        }
+        if (this.editingServer) {
+          await mcpServers.update(this.editingServer.id, data)
+        } else {
+          await mcpServers.create(data)
+        }
         this.closeForm()
         await this.fetchData()
       } catch (e) {
         this.formError = e.message
       } finally { this.submitting = false }
+    },
+    async removeServer(s) {
+      if (!confirm(`确定删除 MCP Server "${s.name}"？`)) return
+      try {
+        await mcpServers.delete(s.id)
+        await this.fetchData()
+      } catch (e) {
+        alert('删除失败: ' + e.message)
+      }
+    },
+    async testConnection() {
+      this.testResult = null
+      let config
+      try { config = this.buildConfig() } catch (e) { this.testResult = { success: false, message: e.message }; return }
+      this.testing = true
+      try {
+        this.testResult = await mcpServers.testConnection({
+          name: this.form.name || 'test',
+          connection_type: this.form.connection_type,
+          config,
+        })
+      } catch (e) {
+        this.testResult = { success: false, message: e.message }
+      } finally { this.testing = false }
+    },
+    async testExisting(s) {
+      s._testing = true
+      s._testResult = null
+      try {
+        const result = await mcpServers.testConnection({
+          name: s.name,
+          connection_type: s.connection_type,
+          config: s.config,
+        })
+        s._testResult = result
+      } catch (e) {
+        s._testResult = { success: false, message: e.message }
+      } finally { s._testing = false }
     },
     configSummary(s) {
       const c = s.config || {}
@@ -198,6 +292,13 @@ export default {
   width: 100%; padding: 8px 10px; border: 1px solid #dcdfe6; border-radius: 4px; font-size: 14px; box-sizing: border-box;
 }
 .form-actions { display: flex; gap: 8px; margin-top: 16px; }
+.action-cell { min-width: 180px; }
+.action-buttons { display: flex; gap: 6px; white-space: nowrap; }
+.test-result { font-size: 12px; margin-top: 4px; max-width: 260px; word-break: break-all; line-height: 1.4; }
 .badge-type { background: #f0f5ff; color: #2f54eb; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
 code { font-size: 12px; background: #f4f4f5; padding: 2px 6px; border-radius: 3px; }
+.test-ok { color: #22c55e; font-size: 13px; }
+.test-fail { color: #ef4444; font-size: 13px; }
+.btn-test { background: #e6f7ff; color: #1890ff; border-color: #91d5ff; }
+.btn-test:hover { background: #bae7ff; }
 </style>

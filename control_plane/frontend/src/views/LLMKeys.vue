@@ -83,11 +83,88 @@
       </table>
       <p v-else style="color:#909399">暂无 LLM Key，点击右上角添加</p>
     </div>
+
+    <!-- Token 用量统计 -->
+    <div class="section">
+      <h3>Token 用量统计</h3>
+      <div class="summary-cards">
+        <div class="summary-card">
+          <div class="card-label">总 Token 用量</div>
+          <div class="card-value">{{ summary.total_tokens?.toLocaleString() || 0 }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="card-label">Prompt Tokens</div>
+          <div class="card-value">{{ summary.total_prompt_tokens?.toLocaleString() || 0 }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="card-label">Completion Tokens</div>
+          <div class="card-value">{{ summary.total_completion_tokens?.toLocaleString() || 0 }}</div>
+        </div>
+        <div class="summary-card">
+          <div class="card-label">调用次数</div>
+          <div class="card-value">{{ summary.record_count || 0 }}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 按节点用量 -->
+    <div class="section">
+      <h3>节点用量明细</h3>
+      <table v-if="nodeUsage.length">
+        <thead>
+          <tr>
+            <th>节点</th>
+            <th>Prompt Tokens</th>
+            <th>Completion Tokens</th>
+            <th>Total Tokens</th>
+            <th>调用次数</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="n in nodeUsage" :key="n.node_id">
+            <td>{{ n.hostname }}</td>
+            <td>{{ n.prompt_tokens.toLocaleString() }}</td>
+            <td>{{ n.completion_tokens.toLocaleString() }}</td>
+            <td>{{ n.total_tokens.toLocaleString() }}</td>
+            <td>{{ n.record_count }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else style="color:#909399">暂无用量记录</p>
+    </div>
+
+    <!-- 最近调用记录 -->
+    <div class="section">
+      <h3>最近调用记录</h3>
+      <table v-if="records.length">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>节点</th>
+            <th>模型</th>
+            <th>Prompt</th>
+            <th>Completion</th>
+            <th>Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in records" :key="r.id">
+            <td>{{ formatTime(r.timestamp) }}</td>
+            <td>{{ r.node_id.slice(0, 8) }}...</td>
+            <td>{{ r.model }}</td>
+            <td>{{ r.prompt_tokens }}</td>
+            <td>{{ r.completion_tokens }}</td>
+            <td>{{ r.total_tokens }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else style="color:#909399">暂无调用记录</p>
+    </div>
   </div>
 </template>
 
 <script>
-import { llmKeys } from '../api.js'
+import { llmKeys, tokenUsage } from '../api.js'
 
 const PROVIDERS = [
   'openai', 'anthropic', 'deepseek', 'openrouter', 'groq',
@@ -106,6 +183,9 @@ export default {
       form: this.emptyForm(),
       formError: '',
       submitting: false,
+      summary: {},
+      nodeUsage: [],
+      records: [],
     }
   },
   methods: {
@@ -115,6 +195,9 @@ export default {
     async fetchData() {
       try {
         this.keys = await llmKeys.list()
+        this.summary = await tokenUsage.summary()
+        this.nodeUsage = await tokenUsage.byNode()
+        this.records = await tokenUsage.query({ limit: 50 })
       } catch { /* keep last data */ }
       finally { this.loading = false }
     },
@@ -170,6 +253,10 @@ export default {
         alert('删除失败: ' + e.message)
       }
     },
+    formatTime(t) {
+      if (!t) return '-'
+      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
+    },
   },
   mounted() { this.fetchData() },
 }
@@ -192,4 +279,10 @@ export default {
 .form-actions { display: flex; gap: 8px; margin-top: 16px; }
 .action-cell { display: flex; gap: 6px; }
 code { font-size: 12px; background: #f4f4f5; padding: 2px 6px; border-radius: 3px; }
+.section { margin-top: 32px; }
+.section h3 { margin-bottom: 12px; font-size: 16px; }
+.summary-cards { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.summary-card { background: #f8f9fa; border-radius: 8px; padding: 16px 24px; min-width: 160px; }
+.card-label { font-size: 13px; color: #666; }
+.card-value { font-size: 24px; font-weight: 600; margin-top: 4px; }
 </style>

@@ -5,10 +5,10 @@
       <button class="btn btn-primary" @click="showAdd = true">注册 Skill</button>
     </div>
 
-    <!-- 添加对话框 -->
-    <div v-if="showAdd" class="modal-overlay" @click.self="closeForm">
+    <!-- 添加/编辑对话框 -->
+    <div v-if="showAdd || editingSkill" class="modal-overlay" @click.self="closeForm">
       <div class="modal-card">
-        <h3>注册新 Skill</h3>
+        <h3>{{ editingSkill ? '编辑 Skill' : '注册新 Skill' }}</h3>
         <div class="form-group">
           <label>名称</label>
           <input v-model="form.name" placeholder="如: browser" />
@@ -46,6 +46,7 @@
             <th>来源</th>
             <th>版本</th>
             <th>创建时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -55,6 +56,10 @@
             <td><span class="badge badge-source">{{ s.source }}</span></td>
             <td>v{{ s.version }}</td>
             <td>{{ formatTime(s.created_at) }}</td>
+            <td class="action-cell">
+              <button class="btn btn-small btn-primary" @click="startEdit(s)">编辑</button>
+              <button class="btn btn-small btn-danger" @click="removeSkill(s)">删除</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -72,6 +77,7 @@ export default {
       skillsList: [],
       loading: true,
       showAdd: false,
+      editingSkill: null,
       form: { name: '', description: '', source: 'custom' },
       formError: '',
       submitting: false,
@@ -85,20 +91,38 @@ export default {
     },
     closeForm() {
       this.showAdd = false
+      this.editingSkill = null
       this.form = { name: '', description: '', source: 'custom' }
       this.formError = ''
+    },
+    startEdit(s) {
+      this.editingSkill = s
+      this.form = { name: s.name, description: s.description || '', source: s.source }
     },
     async submitForm() {
       this.formError = ''
       if (!this.form.name) { this.formError = '请填写 Skill 名称'; return }
       this.submitting = true
       try {
-        await skills.create(this.form)
+        if (this.editingSkill) {
+          await skills.update(this.editingSkill.id, this.form)
+        } else {
+          await skills.create(this.form)
+        }
         this.closeForm()
         await this.fetchData()
       } catch (e) {
         this.formError = e.message
       } finally { this.submitting = false }
+    },
+    async removeSkill(s) {
+      if (!confirm(`确定删除 Skill "${s.name}"？`)) return
+      try {
+        await skills.delete(s.id)
+        await this.fetchData()
+      } catch (e) {
+        alert('删除失败: ' + e.message)
+      }
     },
     formatTime(t) {
       if (!t) return '-'
@@ -124,5 +148,6 @@ export default {
   width: 100%; padding: 8px 10px; border: 1px solid #dcdfe6; border-radius: 4px; font-size: 14px; box-sizing: border-box;
 }
 .form-actions { display: flex; gap: 8px; margin-top: 16px; }
+.action-cell { display: flex; gap: 6px; }
 .badge-source { background: #e6f7ff; color: #1890ff; padding: 2px 8px; border-radius: 3px; font-size: 12px; }
 </style>

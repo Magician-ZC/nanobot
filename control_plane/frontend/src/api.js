@@ -102,6 +102,9 @@ export const skills = {
   list: () => request('/api/skills'),
   create: (data) =>
     request('/api/skills', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id, data) =>
+    request(`/api/skills/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  delete: (id) => request(`/api/skills/${id}`, { method: 'DELETE' }),
 }
 
 // ── MCP Servers API ──
@@ -109,6 +112,11 @@ export const mcpServers = {
   list: () => request('/api/mcp-servers'),
   create: (data) =>
     request('/api/mcp-servers', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id, data) =>
+    request(`/api/mcp-servers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  delete: (id) => request(`/api/mcp-servers/${id}`, { method: 'DELETE' }),
+  testConnection: (data) =>
+    request('/api/mcp-servers/test-connection', { method: 'POST', body: JSON.stringify(data) }),
 }
 
 // ── Policy API ──
@@ -171,7 +179,11 @@ export const tokenUsage = {
     const qs = new URLSearchParams(params).toString()
     return request(`/api/token-usage/summary${qs ? '?' + qs : ''}`)
   },
-  byNode: (nodeId, params = {}) => {
+  byNode: (params = {}) => {
+    const qs = new URLSearchParams(params).toString()
+    return request(`/api/token-usage/by-node${qs ? '?' + qs : ''}`)
+  },
+  byNodeId: (nodeId, params = {}) => {
     const qs = new URLSearchParams(params).toString()
     return request(`/api/nodes/${nodeId}/token-usage${qs ? '?' + qs : ''}`)
   },

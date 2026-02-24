@@ -95,6 +95,81 @@ async def get_skill_by_name(name: str) -> dict | None:
     finally:
         await conn.close()
 
+async def update_skill(skill_id: str, name: str | None = None, description: str | None = None, source: str | None = None) -> dict | None:
+    """更新 Skill 信息"""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT id FROM skill_registry WHERE id = ?", (skill_id,)
+        )
+        if not await cursor.fetchone():
+            return None
+
+        sets: list[str] = []
+        params: list = []
+        if name is not None:
+            # 检查名称唯一性
+            cursor = await conn.execute(
+                "SELECT id FROM skill_registry WHERE name = ? AND id != ?", (name, skill_id)
+            )
+            if await cursor.fetchone():
+                raise ValueError(f"Skill '{name}' already exists")
+            sets.append("name = ?")
+            params.append(name)
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+        if source is not None:
+            sets.append("source = ?")
+            params.append(source)
+
+        if not sets:
+            return await _get_skill_by_id(conn, skill_id)
+
+        params.append(skill_id)
+        await conn.execute(
+            f"UPDATE skill_registry SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await conn.commit()
+        return await _get_skill_by_id(conn, skill_id)
+    finally:
+        await conn.close()
+
+
+async def delete_skill(skill_id: str) -> bool:
+    """删除 Skill"""
+    conn = await get_connection()
+    try:
+        # 先删除关联的 skill_packages
+        await conn.execute(
+            "DELETE FROM skill_packages WHERE skill_id = ?", (skill_id,)
+        )
+        cursor = await conn.execute(
+            "DELETE FROM skill_registry WHERE id = ?", (skill_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        await conn.close()
+
+
+async def _get_skill_by_id(conn, skill_id: str) -> dict | None:
+    """根据 ID 查询 Skill（内部使用，复用连接）"""
+    cursor = await conn.execute(
+        "SELECT id, name, description, source, version, checksum, file_size, created_at "
+        "FROM skill_registry WHERE id = ?",
+        (skill_id,),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0], "name": row[1], "description": row[2], "source": row[3],
+        "version": row[4], "checksum": row[5], "file_size": row[6], "created_at": row[7],
+    }
+
+
+
 
 # ── MCP Server 注册表 CRUD ────────────────────────────────────────
 
@@ -194,6 +269,91 @@ async def get_mcp_server_by_name(name: str) -> dict | None:
         }
     finally:
         await conn.close()
+
+async def update_mcp_server(
+    server_id: str,
+    name: str | None = None,
+    connection_type: str | None = None,
+    config: dict | None = None,
+    description: str | None = None,
+) -> dict | None:
+    """更新 MCP Server 信息"""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "SELECT id FROM mcp_server_registry WHERE id = ?", (server_id,)
+        )
+        if not await cursor.fetchone():
+            return None
+
+        sets: list[str] = []
+        params: list = []
+        if name is not None:
+            cursor = await conn.execute(
+                "SELECT id FROM mcp_server_registry WHERE name = ? AND id != ?", (name, server_id)
+            )
+            if await cursor.fetchone():
+                raise ValueError(f"MCP Server '{name}' already exists")
+            sets.append("name = ?")
+            params.append(name)
+        if connection_type is not None:
+            sets.append("connection_type = ?")
+            params.append(connection_type)
+        if config is not None:
+            sets.append("config = ?")
+            params.append(json.dumps(config, ensure_ascii=False))
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+
+        if not sets:
+            return await _get_mcp_server_by_id(conn, server_id)
+
+        params.append(server_id)
+        await conn.execute(
+            f"UPDATE mcp_server_registry SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await conn.commit()
+        return await _get_mcp_server_by_id(conn, server_id)
+    finally:
+        await conn.close()
+
+
+async def delete_mcp_server(server_id: str) -> bool:
+    """删除 MCP Server"""
+    conn = await get_connection()
+    try:
+        cursor = await conn.execute(
+            "DELETE FROM mcp_server_registry WHERE id = ?", (server_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        await conn.close()
+
+
+async def _get_mcp_server_by_id(conn, server_id: str) -> dict | None:
+    """根据 ID 查询 MCP Server（内部使用，复用连接）"""
+    cursor = await conn.execute(
+        "SELECT id, name, connection_type, config, description, created_at "
+        "FROM mcp_server_registry WHERE id = ?",
+        (server_id,),
+    )
+    row = await cursor.fetchone()
+    if not row:
+        return None
+    config = row[3]
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except (json.JSONDecodeError, TypeError):
+            config = {}
+    return {
+        "id": row[0], "name": row[1], "connection_type": row[2],
+        "config": config, "description": row[4], "created_at": row[5],
+    }
+
+
 
 
 # ── 节点资源策略 CRUD ─────────────────────────────────────────────

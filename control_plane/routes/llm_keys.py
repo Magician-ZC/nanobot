@@ -9,6 +9,7 @@ from control_plane.llm_keys import (
     check_usage_limits,
     delete_llm_key,
     get_llm_key,
+    get_usage_by_node,
     get_usage_summary,
     handle_ratelimit,
     list_llm_keys,
@@ -191,4 +192,17 @@ async def get_key_usage(
         key_id=key_id, start_time=start_time, end_time=end_time,
     )
     return TokenUsageSummary(**summary)
+
+
+@router.get("/api/token-usage/by-node")
+async def get_usage_by_node_endpoint(
+    key_id: str | None = Query(default=None),
+    start_time: str | None = Query(default=None),
+    end_time: str | None = Query(default=None),
+    _user: dict = Depends(get_current_user),
+):
+    """按节点汇总 Token 用量"""
+    return await get_usage_by_node(
+        key_id=key_id, start_time=start_time, end_time=end_time,
+    )
 
