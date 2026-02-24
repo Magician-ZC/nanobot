@@ -8,6 +8,9 @@ import Users from './views/Users.vue'
 import Tasks from './views/Tasks.vue'
 import TokenUsage from './views/TokenUsage.vue'
 import FeishuGateway from './views/FeishuGateway.vue'
+import LLMKeys from './views/LLMKeys.vue'
+import Skills from './views/Skills.vue'
+import MCPServers from './views/MCPServers.vue'
 
 const routes = [
   { path: '/login', component: Login, meta: { public: true } },
@@ -17,6 +20,9 @@ const routes = [
   { path: '/tasks', component: Tasks },
   { path: '/token-usage', component: TokenUsage },
   { path: '/feishu-gateway', component: FeishuGateway },
+  { path: '/llm-keys', component: LLMKeys },
+  { path: '/skills', component: Skills },
+  { path: '/mcp-servers', component: MCPServers },
 ]
 
 const router = createRouter({

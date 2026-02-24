@@ -6,6 +6,9 @@
       </div>
       <div class="nav-links">
         <router-link to="/">仪表盘</router-link>
+        <router-link to="/llm-keys" v-if="isAdmin">Key 管理</router-link>
+        <router-link to="/skills" v-if="isAdmin">Skill</router-link>
+        <router-link to="/mcp-servers" v-if="isAdmin">MCP Server</router-link>
         <router-link to="/users" v-if="isAdmin">用户管理</router-link>
         <router-link to="/tasks">任务监控</router-link>
         <router-link to="/token-usage">Token 用量</router-link>
