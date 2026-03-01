@@ -149,6 +149,12 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Matrix channel not available: {}", e)
 
+        # Feishu Gateway channel (managed mode)
+        # This is a virtual channel for gateway message routing in managed mode
+        # It doesn't need initialization, just register it as a valid channel
+        self.channels["feishu_gateway"] = None
+        logger.debug("Feishu gateway channel registered (managed mode)")
+
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
         """Start a channel and log any exceptions."""
         try:
@@ -218,11 +224,14 @@ class ChannelManager:
                         continue
 
                 channel = self.channels.get(msg.channel)
-                if channel:
+                if channel is not None:
                     try:
                         await channel.send(msg)
                     except Exception as e:
                         logger.error("Error sending to {}: {}", msg.channel, e)
+                elif msg.channel in self.channels:
+                    # Virtual channel (e.g., feishu_gateway) - handled by subscribers
+                    logger.debug("Message routed to virtual channel: {}", msg.channel)
                 else:
                     logger.warning("Unknown channel: {}", msg.channel)
 

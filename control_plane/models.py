@@ -40,6 +40,8 @@ class NodeResponse(BaseModel):
     user_id: str
     hostname: str
     status: str
+    heartbeat_online: bool = False
+    gateway_ws_connected: bool = False
     last_heartbeat: str | None = None
     config_version: int
     policy_version: int
@@ -282,6 +284,21 @@ class LLMKeyResponse(BaseModel):
     total_usage: int
     is_active: bool
     created_at: str
+
+
+class LLMNodeAssignmentRequest(BaseModel):
+    """手动分配 LLM Key 到节点请求"""
+    key_id: str = Field(..., min_length=1)
+    replace_existing: bool = False
+
+
+class LLMNodeAssignmentResponse(BaseModel):
+    """节点 LLM Key 分配响应"""
+    node_id: str
+    key_id: str
+    provider: str
+    replaced: bool = False
+    idempotent: bool = False
 
 
 # ── Token 用量模型 ────────────────────────────────────────────────

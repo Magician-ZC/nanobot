@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 
 from control_plane.database import get_connection
@@ -9,6 +10,22 @@ from control_plane.database import get_connection
 # 简单的对称加密（生产环境应使用 Fernet 或 AES）
 # 这里使用 base64 编码模拟加密存储，保持与项目其他模块一致的简化风格
 import base64
+
+
+class KeyAssignmentError(Exception):
+    """手动分配 LLM Key 失败"""
+
+
+class KeyAssignmentNotFoundError(KeyAssignmentError):
+    """节点或 Key 不存在"""
+
+
+class KeyAssignmentConflictError(KeyAssignmentError):
+    """分配冲突（已有其他绑定且不允许替换）"""
+
+
+class KeyAssignmentCapacityError(KeyAssignmentError):
+    """目标 Key 容量不足"""
 
 
 def _encrypt_key(api_key: str) -> str:
@@ -231,6 +248,123 @@ async def allocate_key(node_id: str, provider: str | None = None) -> dict | None
             "provider": row[1],
             "api_key": _decrypt_key(row[2]),
         }
+    finally:
+        await conn.close()
+async def _reconcile_current_concurrent(conn) -> None:
+    """根据 node_key_assignments 全量重算 current_concurrent，避免计数漂移"""
+    cursor = await conn.execute("SELECT key_id FROM node_key_assignments")
+    rows = await cursor.fetchall()
+    counts = Counter(row[0] for row in rows)
+
+    await conn.execute("UPDATE llm_key_pool SET current_concurrent = 0")
+    for key_id, count in counts.items():
+        await conn.execute(
+            "UPDATE llm_key_pool SET current_concurrent = ? WHERE id = ?",
+            (count, key_id),
+        )
+
+
+async def assign_key_to_node(
+    node_id: str,
+    key_id: str,
+    replace_existing: bool = False,
+) -> dict:
+    """手动将指定 Key 分配给节点
+
+    特性：
+    - 幂等：同节点重复分配同一 key 不重复计数
+    - 可替换：replace_existing=True 时替换旧 key
+    - 并发安全：事务内完成 assignment 与计数更新
+    """
+    conn = await get_connection()
+    try:
+        await conn.execute("BEGIN IMMEDIATE")
+
+        cursor = await conn.execute("SELECT id FROM nodes WHERE id = ?", (node_id,))
+        if not await cursor.fetchone():
+            raise KeyAssignmentNotFoundError("Node not found")
+
+        cursor = await conn.execute(
+            """SELECT id, provider, api_key_encrypted, max_concurrent,
+                      current_concurrent, is_active
+               FROM llm_key_pool WHERE id = ?""",
+            (key_id,),
+        )
+        key_row = await cursor.fetchone()
+        if not key_row:
+            raise KeyAssignmentNotFoundError("LLM Key not found")
+        if not key_row[5]:
+            raise KeyAssignmentConflictError("LLM Key is inactive")
+
+        cursor = await conn.execute(
+            """SELECT id, key_id FROM node_key_assignments
+               WHERE node_id = ? ORDER BY assigned_at DESC""",
+            (node_id,),
+        )
+        existing_rows = await cursor.fetchall()
+
+        latest_assignment_id = existing_rows[0][0] if existing_rows else None
+        latest_key_id = existing_rows[0][1] if existing_rows else None
+
+        if latest_key_id == key_id:
+            if len(existing_rows) > 1:
+                await conn.execute(
+                    "DELETE FROM node_key_assignments WHERE node_id = ? AND id != ?",
+                    (node_id, latest_assignment_id),
+                )
+                await _reconcile_current_concurrent(conn)
+            await conn.commit()
+            return {
+                "node_id": node_id,
+                "key_id": key_id,
+                "provider": key_row[1],
+                "replaced": False,
+                "idempotent": True,
+            }
+
+        if latest_key_id and not replace_existing:
+            raise KeyAssignmentConflictError("Node already has an assigned LLM Key")
+
+        if key_row[4] >= key_row[3]:
+            raise KeyAssignmentCapacityError("LLM Key capacity reached")
+
+        if latest_key_id:
+            await conn.execute("DELETE FROM node_key_assignments WHERE node_id = ?", (node_id,))
+
+        assignment_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        await conn.execute(
+            """INSERT INTO node_key_assignments (id, node_id, key_id, assigned_at)
+               VALUES (?, ?, ?, ?)""",
+            (assignment_id, node_id, key_id, now),
+        )
+
+        if latest_key_id and latest_key_id != key_id:
+            await conn.execute(
+                """UPDATE llm_key_pool
+                   SET current_concurrent = MAX(0, current_concurrent - 1)
+                   WHERE id = ?""",
+                (latest_key_id,),
+            )
+
+        await conn.execute(
+            "UPDATE llm_key_pool SET current_concurrent = current_concurrent + 1 WHERE id = ?",
+            (key_id,),
+        )
+
+        await _reconcile_current_concurrent(conn)
+        await conn.commit()
+
+        return {
+            "node_id": node_id,
+            "key_id": key_id,
+            "provider": key_row[1],
+            "replaced": bool(latest_key_id and latest_key_id != key_id),
+            "idempotent": False,
+        }
+    except Exception:
+        await conn.rollback()
+        raise
     finally:
         await conn.close()
 

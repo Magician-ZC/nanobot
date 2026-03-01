@@ -14,9 +14,14 @@
         <h3 style="margin-bottom:12px">基本信息</h3>
         <div class="info-grid">
           <div><span class="info-label">主机名</span>{{ node.hostname }}</div>
-          <div><span class="info-label">状态</span>
-            <span :class="['badge', node.status === 'online' ? 'badge-online' : 'badge-offline']">
-              {{ node.status === 'online' ? '在线' : '离线' }}
+          <div><span class="info-label">心跳状态</span>
+            <span :class="['badge', node.heartbeat_online ? 'badge-online' : 'badge-offline']">
+              {{ node.heartbeat_online ? '在线' : '离线' }}
+            </span>
+          </div>
+          <div><span class="info-label">控制通道</span>
+            <span :class="['badge', node.gateway_ws_connected ? 'badge-online' : 'badge-offline']">
+              {{ node.gateway_ws_connected ? '在线' : '未连接' }}
             </span>
           </div>
           <div><span class="info-label">节点 ID</span><code>{{ node.id }}</code></div>
@@ -58,6 +63,33 @@
         </button>
       </div>
 
+      <!-- LLM Key 分配 -->
+      <div class="card" v-if="isAdmin">
+        <h3 style="margin-bottom:12px">LLM Key 分配</h3>
+        <p style="margin-bottom:8px;color:#606266">
+          当前分配：
+          <code v-if="assignedLlmKeyId">{{ assignedLlmKeyId }}</code>
+          <span v-else>未分配</span>
+        </p>
+        <div class="llm-assign-row">
+          <select v-model="selectedLlmKeyId" :disabled="assigningLlm || !allLlmKeys.length">
+            <option value="" disabled>请选择 LLM Key</option>
+            <option v-for="k in allLlmKeys" :key="k.id" :value="k.id">
+              {{ k.name }} ({{ k.provider }}) · {{ k.current_concurrent }}/{{ k.max_concurrent }}
+            </option>
+          </select>
+          <label class="replace-option">
+            <input type="checkbox" v-model="replaceExisting" :disabled="assigningLlm" />
+            允许替换现有分配
+          </label>
+          <button class="btn btn-primary" @click="assignLlmKey" :disabled="assigningLlm || !selectedLlmKeyId">
+            {{ assigningLlm ? '分配中...' : '分配 LLM' }}
+          </button>
+        </div>
+        <p v-if="llmAssignError" class="error-msg">{{ llmAssignError }}</p>
+        <p v-if="llmAssignMessage" class="success-msg">{{ llmAssignMessage }}</p>
+      </div>
+
       <!-- 配置编辑器 -->
       <div class="card" v-if="isAdmin">
         <h3 style="margin-bottom:12px">节点配置 (JSON)</h3>
@@ -77,7 +109,7 @@
 </template>
 
 <script>
-import { nodes, skills, mcpServers, policies, configs, getCurrentUser } from '../api.js'
+import { nodes, skills, mcpServers, policies, configs, llmKeys, getCurrentUser } from '../api.js'
 
 export default {
   data() {
@@ -87,8 +119,15 @@ export default {
       error: '',
       allSkills: [],
       allMcpServers: [],
+      allLlmKeys: [],
       selectedSkills: [],
       selectedMcpServers: [],
+      selectedLlmKeyId: '',
+      assignedLlmKeyId: '',
+      replaceExisting: false,
+      assigningLlm: false,
+      llmAssignError: '',
+      llmAssignMessage: '',
       configText: '{}',
       configError: '',
       saving: false,
@@ -104,12 +143,19 @@ export default {
   methods: {
     async fetchData() {
       const id = this.$route.params.id
+      this.error = ''
       try {
-        this.node = await nodes.get(id)
         if (this.isAdmin) {
-          const [sk, mcp] = await Promise.all([skills.list(), mcpServers.list()])
+          const [node, sk, mcp, keys] = await Promise.all([
+            nodes.get(id),
+            skills.list(),
+            mcpServers.list(),
+            llmKeys.list(),
+          ])
+          this.node = node
           this.allSkills = sk
           this.allMcpServers = mcp
+          this.allLlmKeys = keys
           try {
             const policy = await policies.get(id)
             this.selectedSkills = policy.allowed_skills || []
@@ -120,10 +166,18 @@ export default {
           try {
             const cfg = await configs.get(id)
             this.configText = JSON.stringify(cfg.config_data, null, 2)
+            this.assignedLlmKeyId = cfg.config_data?.llm_key?.key_id || ''
+            if (!this.selectedLlmKeyId && this.assignedLlmKeyId) {
+              this.selectedLlmKeyId = this.assignedLlmKeyId
+            }
           } catch {
             this.configText = '{}'
+            this.assignedLlmKeyId = ''
           }
+          return
         }
+
+        this.node = await nodes.get(id)
       } catch (e) {
         this.error = e.message
       } finally {
@@ -162,6 +216,30 @@ export default {
         this.configError = '保存失败: ' + e.message
       } finally {
         this.savingConfig = false
+      }
+    },
+    async assignLlmKey() {
+      this.llmAssignError = ''
+      this.llmAssignMessage = ''
+      if (!this.selectedLlmKeyId) {
+        this.llmAssignError = '请选择一个 LLM Key'
+        return
+      }
+
+      this.assigningLlm = true
+      try {
+        const result = await nodes.assignLLMKey(this.$route.params.id, {
+          key_id: this.selectedLlmKeyId,
+          replace_existing: this.replaceExisting,
+        })
+        await this.fetchData()
+        this.llmAssignMessage = result.idempotent
+          ? '该节点已分配此 Key（幂等成功）'
+          : (result.replaced ? '已替换并分配新的 LLM Key' : 'LLM Key 分配成功')
+      } catch (e) {
+        this.llmAssignError = e.message
+      } finally {
+        this.assigningLlm = false
       }
     },
     formatTime(t) {
@@ -208,5 +286,22 @@ code {
 .checkbox-desc {
   color: #909399;
   font-size: 12px;
+}
+.llm-assign-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.replace-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #606266;
+}
+.success-msg {
+  color: #67c23a;
+  margin-top: 8px;
 }
 </style>

@@ -518,6 +518,11 @@ def gateway(
         channels_config=config.channels,
     )
 
+    # 受管模式上下文注入到 AgentLoop（供内置受管心跳逻辑使用）
+    if managed:
+        agent._managed_client = managed_client
+        agent._policy_enforcer = policy_enforcer
+
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
         """Execute a cron job through the agent."""

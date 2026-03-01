@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from control_plane.auth import get_current_user, require_admin
 from control_plane.models import (
     HeartbeatResponse,
+    LLMNodeAssignmentRequest,
+    LLMNodeAssignmentResponse,
     NodeRegisterRequest,
     NodeRegisterResponse,
     NodeResponse,
@@ -21,7 +23,28 @@ from control_plane.nodes import (
     register_node,
 )
 from control_plane.permissions import check_node_access
-from control_plane.llm_keys import allocate_key
+from control_plane.llm_keys import (
+    KeyAssignmentCapacityError,
+    KeyAssignmentConflictError,
+    KeyAssignmentNotFoundError,
+    allocate_key,
+    assign_key_to_node,
+)
+
+
+def _with_gateway_status(node: dict) -> dict:
+    """补充节点在线状态（心跳 + 网关控制通道）。"""
+    from control_plane.routes.feishu_gateway import get_message_router
+
+    node_data = dict(node)
+    node_id = node_data.get("id", "")
+    node_data["heartbeat_online"] = node_data.get("status") == "online"
+
+    router = get_message_router()
+    node_data["gateway_ws_connected"] = bool(
+        router and node_id and router.is_node_connected(node_id)
+    )
+    return node_data
 
 router = APIRouter()
 
@@ -109,7 +132,7 @@ async def list_nodes_endpoint(current_user: dict = Depends(get_current_user)):
         nodes = await list_nodes()
     else:
         nodes = await list_nodes(user_id=current_user["id"])
-    return [NodeResponse(**n) for n in nodes]
+    return [NodeResponse(**_with_gateway_status(n)) for n in nodes]
 
 
 # ── 节点详情 ──────────────────────────────────────────────────────
@@ -118,7 +141,42 @@ async def list_nodes_endpoint(current_user: dict = Depends(get_current_user)):
 async def get_node_endpoint(id: str, current_user: dict = Depends(get_current_user)):
     """获取节点详情（需要节点访问权限）"""
     node = await check_node_access(current_user, id)
-    return NodeResponse(**node)
+    return NodeResponse(**_with_gateway_status(node))
+
+
+@router.post(
+    "/api/nodes/{id}/llm-assignment",
+    response_model=LLMNodeAssignmentResponse,
+)
+async def assign_node_llm_key(
+    id: str,
+    req: LLMNodeAssignmentRequest,
+    _admin: dict = Depends(require_admin),
+):
+    """手动为节点分配 LLM Key（仅 admin）"""
+    try:
+        result = await assign_key_to_node(
+            node_id=id,
+            key_id=req.key_id,
+            replace_existing=req.replace_existing,
+        )
+    except KeyAssignmentNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+    except KeyAssignmentConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+    except KeyAssignmentCapacityError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
+
+    return LLMNodeAssignmentResponse(**result)
 
 
 # ── 删除节点 ──────────────────────────────────────────────────────

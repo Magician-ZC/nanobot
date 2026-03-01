@@ -30,6 +30,30 @@ _PING_INTERVAL = 30
 _PONG_TIMEOUT = 10
 
 
+def _extract_ws_status_code(error: Exception) -> int | None:
+    """提取 WebSocket 握手失败状态码。"""
+    response = getattr(error, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+        if status_code is None:
+            status_code = getattr(response, "status", None)
+        if isinstance(status_code, int):
+            return status_code
+
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    return None
+
+
+def _short_node_id(node_id: str) -> str:
+    """缩短节点 ID 用于日志展示。"""
+    if len(node_id) <= 8:
+        return node_id
+    return f"{node_id[:8]}..."
+
+
 class GatewayMessageClient:
     """网关消息客户端 - Agent Node 侧
 
@@ -76,6 +100,14 @@ class GatewayMessageClient:
         # 订阅 outbound 消息
         self._bus.subscribe_outbound(GATEWAY_CHANNEL, self._on_outbound)
 
+        ws_urls = self._ws_urls()
+        logger.info(
+            "GatewayMessageClient 启动: node_id=%s control_plane=%s primary_ws=%s",
+            _short_node_id(self._node_id),
+            self._base_url,
+            ws_urls[0],
+        )
+
         # 启动重连循环
         task = asyncio.create_task(self._reconnect_loop())
         self._tasks.append(task)
@@ -100,52 +132,97 @@ class GatewayMessageClient:
 
     # ── WebSocket 连接管理 ────────────────────────────────────────
 
-    def _ws_url(self) -> str:
-        """构建 WebSocket URL"""
+    def _ws_base(self) -> str:
+        """构建 WebSocket base URL"""
         base = self._base_url
         if base.startswith("https://"):
-            base = "wss://" + base[len("https://"):]
-        elif base.startswith("http://"):
-            base = "ws://" + base[len("http://"):]
-        return f"{base}/api/gateway/ws"
+            return "wss://" + base[len("https://"):]
+        if base.startswith("http://"):
+            return "ws://" + base[len("http://"):]
+        return base
+
+    def _ws_urls(self) -> list[str]:
+        """构建首选与兼容 WebSocket URL。"""
+        base = self._ws_base()
+        return [f"{base}/api/gateway/ws", f"{base}/ws"]
 
     async def _connect_and_auth(self) -> bool:
         """建立 WebSocket 连接并完成认证
 
         Requirements: 4.1, 4.7
         """
-        try:
-            import websockets
-            url = self._ws_url()
-            logger.info("正在连接网关 WebSocket: %s", url)
-            self._ws = await websockets.connect(url)
+        import websockets
 
-            # 发送认证消息
-            auth_msg = json.dumps({
-                "type": "auth",
-                "node_id": self._node_id,
-                "api_key": self._api_key,
-            })
-            await self._ws.send(auth_msg)
+        ws_urls = self._ws_urls()
 
-            # 等待认证响应
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
-            resp = json.loads(raw)
+        for idx, url in enumerate(ws_urls):
+            is_fallback = idx > 0
+            if is_fallback:
+                logger.warning("主路径握手失败，尝试兼容网关 WebSocket 路径: %s", url)
 
-            if resp.get("type") == "auth_ok":
-                self._connected = True
-                logger.info("网关 WebSocket 认证成功")
-                return True
-            else:
+            try:
+                logger.info(
+                    "正在连接网关 WebSocket: url=%s node_id=%s",
+                    url,
+                    _short_node_id(self._node_id),
+                )
+                self._ws = await websockets.connect(url)
+
+                # 发送认证消息
+                auth_msg = json.dumps({
+                    "type": "auth",
+                    "node_id": self._node_id,
+                    "api_key": self._api_key,
+                })
+                await self._ws.send(auth_msg)
+
+                # 等待认证响应
+                raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
+                resp = json.loads(raw)
+
+                if resp.get("type") == "auth_ok":
+                    self._connected = True
+                    if is_fallback:
+                        logger.warning(
+                            "已通过兼容路径连接网关 WebSocket，请将控制面地址统一迁移到 /api/gateway/ws"
+                        )
+                    logger.info(
+                        "网关 WebSocket 认证成功: node_id=%s url=%s",
+                        _short_node_id(self._node_id),
+                        url,
+                    )
+                    return True
+
                 reason = resp.get("reason", "unknown")
-                logger.error("网关 WebSocket 认证失败: %s", reason)
+                logger.error(
+                    "网关 WebSocket 认证失败: reason=%s node_id=%s url=%s",
+                    reason,
+                    _short_node_id(self._node_id),
+                    url,
+                )
                 await self._close_ws()
                 return False
 
-        except Exception as e:
-            logger.error("网关 WebSocket 连接失败: %s", e)
-            await self._close_ws()
-            return False
+            except Exception as e:
+                status_code = _extract_ws_status_code(e)
+                can_fallback = (
+                    not is_fallback
+                    and idx < len(ws_urls) - 1
+                    and status_code in {403, 404}
+                )
+                logger.error(
+                    "网关 WebSocket 连接失败: node_id=%s url=%s status_code=%s error=%s",
+                    _short_node_id(self._node_id),
+                    url,
+                    status_code,
+                    e,
+                )
+                await self._close_ws()
+                if can_fallback:
+                    continue
+                return False
+
+        return False
 
     async def _close_ws(self) -> None:
         """安全关闭 WebSocket 连接"""
@@ -188,9 +265,19 @@ class GatewayMessageClient:
                     await self._close_ws()
                     if not self._running:
                         break
-                    logger.info("网关连接断开，将在 %ds 后重连", retry_delay)
+                    logger.info(
+                        "网关连接断开，将在 %ds 后重连: node_id=%s control_plane=%s",
+                        retry_delay,
+                        _short_node_id(self._node_id),
+                        self._base_url,
+                    )
                 else:
-                    logger.info("网关连接失败，将在 %ds 后重试", retry_delay)
+                    logger.info(
+                        "网关连接失败，将在 %ds 后重试: node_id=%s control_plane=%s",
+                        retry_delay,
+                        _short_node_id(self._node_id),
+                        self._base_url,
+                    )
 
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, _MAX_RETRY_DELAY)
@@ -206,7 +293,10 @@ class GatewayMessageClient:
             try:
                 raw = await self._ws.recv()
                 data = json.loads(raw)
-                await self._on_message(data)
+                try:
+                    await self._on_message(data)
+                except Exception as e:
+                    logger.error("处理网关消息异常: %s", e, exc_info=True)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

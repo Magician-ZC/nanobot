@@ -8,6 +8,7 @@ Requirements: 3.1, 3.2, 3.3, 3.4, 3.5
 
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
@@ -16,6 +17,7 @@ from control_plane.feishu_bind_code import verify_and_bind
 from control_plane.feishu_binding import get_binding_by_open_id, update_binding_name
 from control_plane.feishu_conversation import save_message
 from control_plane.gateway_message import GatewayMessage
+from control_plane.nodes import get_node_by_id
 
 # 绑定码格式：6 位大写字母+数字
 _BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{6}$")
@@ -36,6 +38,10 @@ class MessageRouter:
         self._gateway = gateway_service
         # node_id -> WebSocket 连接
         self._node_connections: dict[str, Any] = {}
+        # node_id -> 最近断开原因（用于诊断）
+        self._node_disconnect_reasons: dict[str, str] = {}
+        # node_id -> 最近断开时间（UTC）
+        self._node_disconnected_at: dict[str, datetime] = {}
 
     def set_gateway(self, gateway_service: Any) -> None:
         """设置网关服务引用（支持延迟注入）"""
@@ -46,12 +52,20 @@ class MessageRouter:
     def register_node_connection(self, node_id: str, websocket: Any) -> None:
         """注册节点 WebSocket 连接"""
         self._node_connections[node_id] = websocket
+        # 重新上线时清理离线诊断信息
+        self._node_disconnect_reasons.pop(node_id, None)
+        self._node_disconnected_at.pop(node_id, None)
         logger.info(f"节点 {node_id} 已注册 WebSocket 连接")
 
-    def unregister_node_connection(self, node_id: str) -> None:
+    def unregister_node_connection(self, node_id: str, reason: str | None = None) -> None:
         """注销节点 WebSocket 连接"""
         self._node_connections.pop(node_id, None)
-        logger.info(f"节点 {node_id} 已注销 WebSocket 连接")
+        if reason:
+            self._node_disconnect_reasons[node_id] = reason
+            self._node_disconnected_at[node_id] = datetime.now(timezone.utc)
+            logger.info(f"节点 {node_id} 已注销 WebSocket 连接，原因: {reason}")
+        else:
+            logger.info(f"节点 {node_id} 已注销 WebSocket 连接")
 
     def is_node_connected(self, node_id: str) -> bool:
         """检查节点是否在线（有活跃 WebSocket 连接）"""
@@ -61,6 +75,21 @@ class MessageRouter:
     def connected_node_count(self) -> int:
         """当前在线节点数"""
         return len(self._node_connections)
+
+    async def get_node_offline_debug(self, node_id: str) -> dict[str, str | bool | None]:
+        """获取节点离线诊断信息"""
+        node = await get_node_by_id(node_id)
+        reason = self._node_disconnect_reasons.get(node_id)
+        disconnected_at = self._node_disconnected_at.get(node_id)
+        return {
+            "exists": bool(node),
+            "db_status": node.get("status") if node else None,
+            "last_heartbeat": node.get("last_heartbeat") if node else None,
+            "last_disconnect_reason": reason,
+            "last_disconnected_at": (
+                disconnected_at.isoformat() if disconnected_at else None
+            ),
+        }
 
     # ── 入站消息路由（飞书 → Agent Node）─────────────────────────
 
@@ -111,8 +140,20 @@ class MessageRouter:
 
         # 检查节点是否在线
         if not self.is_node_connected(node_id):
-            # 节点离线 (Requirement 3.4)
-            logger.info(f"目标节点 {node_id} 离线，无法转发消息")
+            # 节点控制通道未连接 (Requirement 3.4)
+            debug = await self.get_node_offline_debug(node_id)
+            logger.info(
+                "目标节点 {} WS 控制通道未连接，无法转发消息。"
+                "feishu_open_id={} node_exists={} db_status={} last_heartbeat={} "
+                "last_disconnect_reason={} last_disconnected_at={}",
+                node_id,
+                feishu_open_id,
+                debug["exists"],
+                debug["db_status"],
+                debug["last_heartbeat"],
+                debug["last_disconnect_reason"],
+                debug["last_disconnected_at"],
+            )
             await self._reply_feishu(
                 feishu_open_id,
                 "您绑定的 Agent 节点当前不在线，请稍后再试。",
@@ -129,7 +170,7 @@ class MessageRouter:
         except Exception as e:
             logger.error(f"转发消息到节点 {node_id} 失败: {e}")
             # 连接可能已断开，清理
-            self.unregister_node_connection(node_id)
+            self.unregister_node_connection(node_id, reason=f"forward send failed: {e}")
             await self._reply_feishu(
                 feishu_open_id,
                 "消息转发失败，您绑定的节点连接异常，请稍后再试。",

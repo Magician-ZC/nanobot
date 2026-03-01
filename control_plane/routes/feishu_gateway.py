@@ -36,6 +36,11 @@ _gateway_service = None
 _message_router = None
 
 
+def get_message_router():
+    """获取 MessageRouter 实例（用于节点连接状态查询）"""
+    return _message_router
+
+
 def set_gateway_service(service) -> None:
     """注入 FeishuGatewayService 实例"""
     global _gateway_service
@@ -279,25 +284,40 @@ async def get_user_conversation(
 _AUTH_TIMEOUT = 10
 # 心跳间隔（秒）
 _PING_INTERVAL = 30
+# 兼容路径迁移告警去重（按客户端 host）
+_LEGACY_WS_WARNED_HOSTS: set[str] = set()
 
 
 @router.websocket("/api/gateway/ws")
 async def gateway_ws(ws: WebSocket):
-    """Agent Node WebSocket 连接端点
+    """Agent Node WebSocket 连接端点"""
+    await _gateway_ws_handler(ws, is_legacy_path=False)
 
-    协议流程：
-    1. 客户端发送 {"type": "auth", "node_id": "...", "api_key": "..."}
-    2. 服务端回复 auth_ok 或 auth_fail
-    3. 认证成功后双向消息传输 + 心跳保活
 
-    Requirements: 4.1, 4.2, 4.5, 4.7
-    """
+@router.websocket("/ws")
+async def gateway_ws_legacy(ws: WebSocket):
+    """兼容旧版 Agent Node WebSocket 连接端点"""
+    await _gateway_ws_handler(ws, is_legacy_path=True)
+
+
+async def _gateway_ws_handler(ws: WebSocket, *, is_legacy_path: bool) -> None:
+    """处理 Agent Node WebSocket 连接。"""
+    path = ws.url.path
+    client_host = ws.client.host if ws.client else "unknown"
+    if is_legacy_path and client_host not in _LEGACY_WS_WARNED_HOSTS:
+        _LEGACY_WS_WARNED_HOSTS.add(client_host)
+        logger.warning(
+            "检测到兼容 WebSocket 路径连接 path={} host={}，请迁移到 /api/gateway/ws",
+            path,
+            client_host,
+        )
+
     await ws.accept()
     node_id: str | None = None
 
     try:
         # ── 认证阶段 ──
-        node_id = await _authenticate(ws)
+        node_id, _ = await _authenticate(ws)
         if not node_id:
             return
 
@@ -309,40 +329,64 @@ async def gateway_ws(ws: WebSocket):
         await _message_loop(ws, node_id)
 
     except WebSocketDisconnect:
-        logger.info(f"节点 {node_id or 'unknown'} WebSocket 断开")
-    except Exception as e:
-        logger.error(f"节点 {node_id or 'unknown'} WebSocket 异常: {e}")
-    finally:
+        logger.info("节点 {} WebSocket 断开 path={}", node_id or "unknown", path)
         if node_id and _message_router:
-            _message_router.unregister_node_connection(node_id)
+            _message_router.unregister_node_connection(node_id, reason="peer disconnected")
+    except Exception as e:
+        logger.error("节点 {} WebSocket 异常 path={} error={}", node_id or "unknown", path, e)
+        if node_id and _message_router:
+            _message_router.unregister_node_connection(node_id, reason=f"ws error: {e}")
+    finally:
+        if node_id and _message_router and _message_router.is_node_connected(node_id):
+            _message_router.unregister_node_connection(node_id, reason="handler exit")
 
 
-async def _authenticate(ws: WebSocket) -> str | None:
-    """处理 WebSocket 认证，返回 node_id 或 None"""
+async def _authenticate(ws: WebSocket) -> tuple[str | None, str | None]:
+    """处理 WebSocket 认证，返回 (node_id, failure_reason)"""
+    path = ws.url.path
+
     try:
         raw = await asyncio.wait_for(ws.receive_json(), timeout=_AUTH_TIMEOUT)
     except asyncio.TimeoutError:
+        logger.warning(
+            "Gateway WS 认证失败 path={} node_id=- reason={}",
+            path,
+            "auth timeout",
+        )
         await ws.send_json({"type": "auth_fail", "reason": "auth timeout"})
         await ws.close()
-        return None
+        return None, "auth timeout"
 
     if raw.get("type") != "auth":
+        logger.warning(
+            "Gateway WS 认证失败 path={} node_id={} reason={} first_type={}",
+            path,
+            raw.get("node_id", "") or "-",
+            "expected auth message",
+            raw.get("type", "") or "-",
+        )
         await ws.send_json({"type": "auth_fail", "reason": "expected auth message"})
         await ws.close()
-        return None
+        return None, "expected auth message"
 
     node_id = raw.get("node_id", "")
     api_key = raw.get("api_key", "")
 
     node = await verify_node_api_key(node_id, api_key)
     if not node:
+        logger.warning(
+            "Gateway WS 认证失败 path={} node_id={} reason={}",
+            path,
+            node_id or "-",
+            "invalid credentials",
+        )
         await ws.send_json({"type": "auth_fail", "reason": "invalid credentials"})
         await ws.close()
-        return None
+        return None, "invalid credentials"
 
     await ws.send_json({"type": "auth_ok"})
-    logger.info(f"节点 {node_id} WebSocket 认证成功")
-    return node_id
+    logger.info("节点 {} WebSocket 认证成功 path={}", node_id, path)
+    return node_id, None
 
 
 async def _message_loop(ws: WebSocket, node_id: str) -> None:

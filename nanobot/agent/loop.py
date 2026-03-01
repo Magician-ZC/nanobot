@@ -108,8 +108,11 @@ class AgentLoop:
         self._consolidating: set[str] = set()  # Session keys with consolidation in progress
         self._consolidation_tasks: set[asyncio.Task] = set()  # Strong refs to in-flight tasks
         self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
-        self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
-        self._processing_lock = asyncio.Lock()
+        self._active_tasks: dict[str, list[asyncio.Task]] = {}  # Track active tasks per session
+        self._processing_lock = asyncio.Lock()  # Global lock for message processing
+        self._managed_client = None
+        self._policy_enforcer = None
+        self._heartbeat_service = None
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -265,7 +268,7 @@ class AgentLoop:
 
         def status_collector() -> dict[str, Any]:
             """收集当前节点状态"""
-            loaded_skills = [t for t in self.tools.list_tools()]
+            loaded_skills = list(self.tools.tool_names)
             return {
                 "loaded_skills": loaded_skills,
                 "connected_mcp_servers": list(self._mcp_servers.keys()) if self._mcp_servers else [],

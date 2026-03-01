@@ -85,6 +85,11 @@ export const users = {
 export const nodes = {
   list: () => request('/api/nodes'),
   get: (id) => request(`/api/nodes/${id}`),
+  assignLLMKey: (id, data) =>
+    request(`/api/nodes/${id}/llm-assignment`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   delete: (id) => request(`/api/nodes/${id}`, { method: 'DELETE' }),
 }
 

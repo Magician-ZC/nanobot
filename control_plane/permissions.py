@@ -1,5 +1,7 @@
 """权限检查中间件 - 节点访问控制"""
 
+import json
+
 from fastapi import Depends, HTTPException, Request, status
 
 from control_plane.auth import get_current_user
@@ -38,6 +40,13 @@ async def check_node_access(user: dict, node_id: str) -> dict:
                 detail="Node not found",
             )
 
+        last_report = row[7]
+        if isinstance(last_report, str):
+            try:
+                last_report = json.loads(last_report)
+            except json.JSONDecodeError:
+                last_report = None
+
         node = {
             "id": row[0],
             "user_id": row[1],
@@ -46,7 +55,7 @@ async def check_node_access(user: dict, node_id: str) -> dict:
             "last_heartbeat": row[4],
             "config_version": row[5],
             "policy_version": row[6],
-            "last_report": row[7],
+            "last_report": last_report,
             "created_at": row[8],
         }
 

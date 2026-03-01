@@ -431,49 +431,6 @@ class FeishuGatewayService:
             logger.debug(f"获取飞书用户名失败: {e}")
         return ""
 
-    async def send_message(self, open_id: str, content: str,
-                           msg_type: str = "interactive") -> bool:
-        """通过飞书 API 发送消息给指定用户
-
-        Requirements: 4.5
-        """
-        if not self._client:
-            logger.warning("飞书客户端未初始化，无法发送消息")
-            return False
-
-        try:
-            # 确定 receive_id_type
-            if open_id.startswith("oc_"):
-                receive_id_type = "chat_id"
-            else:
-                receive_id_type = "open_id"
-
-            request = CreateMessageRequest.builder() \
-                .receive_id_type(receive_id_type) \
-                .request_body(
-                    CreateMessageRequestBody.builder()
-                    .receive_id(open_id)
-                    .msg_type(msg_type)
-                    .content(content)
-                    .build()
-                ).build()
-
-            loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(
-                None, self._client.im.v1.message.create, request
-            )
-
-            if not response.success():
-                logger.error(
-                    f"飞书消息发送失败: code={response.code}, msg={response.msg}"
-                )
-                return False
-
-            logger.debug(f"飞书消息已发送至 {open_id}")
-            return True
-        except Exception as e:
-            logger.error(f"发送飞书消息出错: {e}")
-            return False
     async def add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> bool:
         """为飞书消息添加 reaction（点赞），复用 feishu.py 的模式"""
         if not self._client:
