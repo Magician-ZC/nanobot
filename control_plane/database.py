@@ -9,7 +9,7 @@ import aiosqlite
 DEFAULT_DB_PATH = Path(os.environ.get("CP_DB_PATH", "data/control_plane.db"))
 
 # 当前 schema 版本
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 async def get_connection(db_path: Path | None = None) -> aiosqlite.Connection:
@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS llm_key_pool (
     name TEXT NOT NULL,
     provider TEXT NOT NULL,
     api_key_encrypted TEXT NOT NULL,
+    api_base TEXT DEFAULT '',
     max_concurrent INTEGER NOT NULL DEFAULT 5,
     current_concurrent INTEGER NOT NULL DEFAULT 0,
     usage_limit INTEGER NOT NULL DEFAULT 0,
@@ -269,6 +270,26 @@ _V2_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_conversations_created_at ON feishu_conversations(created_at);",
 ]
 
+# ── Schema V3: 为 llm_key_pool 添加 api_base 列 ──────────────────────
+
+async def _apply_v3(conn: aiosqlite.Connection) -> None:
+    """应用 V3 schema：为 llm_key_pool 添加 api_base 列"""
+    try:
+        # 检查列是否已存在
+        cursor = await conn.execute(
+            "PRAGMA table_info(llm_key_pool)"
+        )
+        columns = await cursor.fetchall()
+        column_names = [col[1] for col in columns]
+
+        if "api_base" not in column_names:
+            await conn.execute(
+                "ALTER TABLE llm_key_pool ADD COLUMN api_base TEXT DEFAULT ''"
+            )
+    except Exception as e:
+        # 如果列已存在或其他错误，忽略
+        pass
+
 # V1 所有建表语句，按依赖顺序排列
 _V1_TABLES = [
     _USERS_TABLE,
@@ -341,6 +362,7 @@ async def _apply_v2(conn: aiosqlite.Connection) -> None:
 _MIGRATIONS: dict[int, callable] = {
     1: _apply_v1,
     2: _apply_v2,
+    3: _apply_v3,
 }
 
 

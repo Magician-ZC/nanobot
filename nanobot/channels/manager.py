@@ -157,6 +157,10 @@ class ChannelManager:
 
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
         """Start a channel and log any exceptions."""
+        # Skip virtual channels (e.g., feishu_gateway in managed mode)
+        if channel is None:
+            logger.debug("Skipping virtual channel: {}", name)
+            return
         try:
             await channel.start()
         except Exception as e:

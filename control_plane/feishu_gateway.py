@@ -357,6 +357,8 @@ class FeishuGatewayService:
             .build()
 
         # 创建事件处理器
+        # 注意: 飞书会发送多种事件(如消息已读),但SDK只需注册需要处理的事件
+        # 未注册的事件会被SDK忽略并记录日志,这是正常行为
         event_handler = lark.EventDispatcherHandler.builder(
             encrypt_key or "",
             verification_token or "",

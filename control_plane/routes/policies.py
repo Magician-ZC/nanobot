@@ -304,4 +304,22 @@ async def update_config_endpoint(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(e)
         )
+
+    # 如果节点在线，立即推送配置更新
+    from control_plane.routes.feishu_gateway import get_message_router
+    router = get_message_router()
+    if router and router.is_node_connected(id):
+        # 获取完整配置（包含 LLM Key）
+        full_config = await get_node_config_with_llm_key(id)
+        if full_config:
+            # 直接通过 WebSocket 发送配置更新
+            ws = router._node_connections.get(id)
+            if ws:
+                import json
+                await ws.send_text(json.dumps({
+                    "type": "config_update",
+                    "config": full_config.get("config_data", {}),
+                    "version": full_config.get("version", 1),
+                }))
+
     return NodeConfigResponse(**config)

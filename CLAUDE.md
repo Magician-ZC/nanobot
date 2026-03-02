@@ -28,6 +28,11 @@ nanobot gateway
 # Check configured providers/channels/workspace
 nanobot status
 nanobot channels status
+
+# Scheduled tasks
+nanobot cron add --name "task" --message "msg" --cron "0 9 * * *"
+nanobot cron list
+nanobot cron remove <job_id>
 ```
 
 ### Lint and tests

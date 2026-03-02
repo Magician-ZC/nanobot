@@ -176,6 +176,23 @@ async def assign_node_llm_key(
             detail=str(e),
         )
 
+    # 如果节点在线，立即推送 LLM Key 更新
+    from control_plane.routes.feishu_gateway import get_message_router
+    from control_plane.configs import get_node_config_with_llm_key
+    router = get_message_router()
+    if router and router.is_node_connected(id):
+        full_config = await get_node_config_with_llm_key(id)
+        if full_config:
+            # 直接通过 WebSocket 发送配置更新
+            ws = router._node_connections.get(id)
+            if ws:
+                import json
+                await ws.send_text(json.dumps({
+                    "type": "config_update",
+                    "config": full_config.get("config_data", {}),
+                    "version": full_config.get("version", 1),
+                }))
+
     return LLMNodeAssignmentResponse(**result)
 
 

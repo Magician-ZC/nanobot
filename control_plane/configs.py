@@ -139,7 +139,7 @@ async def get_node_config_with_llm_key(node_id: str) -> dict | None:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            """SELECT ka.key_id, kp.provider, kp.api_key_encrypted
+            """SELECT ka.key_id, kp.provider, kp.api_key_encrypted, kp.api_base
                FROM node_key_assignments ka
                JOIN llm_key_pool kp ON ka.key_id = kp.id
                WHERE ka.node_id = ? AND kp.is_active = 1""",
@@ -152,6 +152,7 @@ async def get_node_config_with_llm_key(node_id: str) -> dict | None:
                 "key_id": row[0],
                 "provider": row[1],
                 "api_key": _decrypt_key(row[2]),
+                "api_base": row[3] or "",  # 可能为 NULL，转换为空字符串
             }
             config["config_data"] = config_data
     finally:

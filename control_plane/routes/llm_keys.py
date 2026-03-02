@@ -41,10 +41,19 @@ async def create_llm_key(
     _admin: dict = Depends(require_admin),
 ):
     """添加 LLM API Key（仅 admin）"""
+    # 验证 provider 名称
+    from nanobot.providers.registry import find_by_name
+    if not find_by_name(req.provider):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown provider: {req.provider}. Valid providers: openai, anthropic, deepseek, minimax, moonshot, etc.",
+        )
+
     result = await add_llm_key(
         name=req.name,
         provider=req.provider,
         api_key=req.api_key,
+        api_base=req.api_base,
         max_concurrent=req.max_concurrent,
         usage_limit=req.usage_limit,
     )

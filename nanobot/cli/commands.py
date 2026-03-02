@@ -203,6 +203,7 @@ def _make_provider(config: Config):
     from nanobot.providers.custom_provider import CustomProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
+    from nanobot.providers.minimax_provider import MinimaxProvider
 
     model = config.agents.defaults.model
     provider_name = config.get_provider_name(model)
@@ -211,6 +212,21 @@ def _make_provider(config: Config):
     # OpenAI Codex (OAuth)
     if provider_name == "openai_codex" or model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=model)
+
+    # MiniMax: 根据 api_base 判断使用哪个 provider
+    # - Anthropic 兼容 API (minimaxi.com/anthropic) -> MinimaxProvider
+    # - OpenAI 兼容 API (minimax.io/v1) -> LiteLLM
+    if provider_name == "minimax":
+        api_base = config.get_api_base(model) or ""
+        # 如果 api_base 包含 "anthropic"，使用 MinimaxProvider（Anthropic 格式）
+        if "anthropic" in api_base.lower():
+            return MinimaxProvider(
+                api_key=p.api_key if p else "no-key",
+                api_base=api_base,
+                default_model=model,
+            )
+        # 否则使用 LiteLLM（OpenAI 格式）
+        # 注意：这里不再默认使用 MinimaxProvider，而是交给 LiteLLM 处理
 
     # Custom: direct OpenAI-compatible endpoint, bypasses LiteLLM
     if provider_name == "custom":
@@ -389,12 +405,87 @@ def _apply_remote_config(config: Config, remote_config: dict) -> None:
     if llm_key and llm_key.get("api_key"):
         provider_name = llm_key["provider"]
         api_key = llm_key["api_key"]
-        p = getattr(config.providers, provider_name, None)
+        api_base = llm_key.get("api_base", "")  # 从 Control Plane 获取自定义 API 端点
+
+        # 特殊处理：MiniMax Coding Plan 使用 Anthropic 兼容 API
+        is_minimax_coding_plan = False
+        if provider_name == "minimax" and "anthropic" in api_base.lower():
+            logger.info(f"受管模式: 检测到 MiniMax Coding Plan (Anthropic 兼容)")
+            is_minimax_coding_plan = True
+            # 保持 provider=minimax，使用 MinimaxProvider
+
+        # 规范化 provider 名称（处理大小写和模型名称混淆）
+        from nanobot.providers.registry import find_by_name
+        normalized_provider = None
+
+        # 先尝试直接匹配
+        if find_by_name(provider_name):
+            normalized_provider = provider_name
+        else:
+            # 尝试小写匹配
+            provider_lower = provider_name.lower()
+            if find_by_name(provider_lower):
+                normalized_provider = provider_lower
+            else:
+                # 尝试从模型名称推断 provider（如 MiniMax-M2.5 -> minimax）
+                for spec in find_by_name.__globals__.get('PROVIDERS', []):
+                    for kw in spec.keywords:
+                        if kw.lower() in provider_lower:
+                            normalized_provider = spec.name
+                            break
+                    if normalized_provider:
+                        break
+
+        if not normalized_provider:
+            logger.warning(f"受管模式: 无法识别 provider '{provider_name}'，尝试使用原值")
+            normalized_provider = provider_name
+
+        p = getattr(config.providers, normalized_provider, None)
         if p is not None:
             p.api_key = api_key
-            logger.info(f"受管模式: 已注入 Control Plane 分配的 LLM Key (provider={provider_name})")
+            logger.info(f"受管模式: 设置 provider={normalized_provider}, api_key={api_key[:10]}..., api_base={api_base}")
+            if api_base:
+                p.api_base = api_base
+                logger.info(f"受管模式: 已注入 Control Plane 分配的 LLM Key (provider={normalized_provider}, api_base={api_base})")
+            else:
+                logger.info(f"受管模式: 已注入 Control Plane 分配的 LLM Key (provider={normalized_provider})")
+
+            # 强制设置 provider，确保 _match_provider 能正确匹配
+            config.agents.defaults.provider = normalized_provider
+            logger.info(f"受管模式: 强制设置 provider={normalized_provider}")
+
+            # 强制设置对应 provider 的默认模型
+            default_models = {
+                "minimax": "MiniMax-M2.5",
+                "anthropic": "claude-3-5-sonnet-20241022",
+                "openai": "gpt-4o",
+                "deepseek": "deepseek-chat",
+                "moonshot": "moonshot-v1-8k",
+                "qwen": "qwen-plus",
+                "gemini": "gemini-1.5-pro",
+            }
+
+            # 如果是 MiniMax Coding Plan，使用 MiniMax-M2.5 模型
+            if is_minimax_coding_plan:
+                old_model = config.agents.defaults.model
+                new_model = "MiniMax-M2.5"
+                config.agents.defaults.model = new_model
+                logger.info(f"受管模式: 强制切换模型 {old_model} -> {new_model} (MiniMax Coding Plan)")
+            elif normalized_provider in default_models:
+                old_model = config.agents.defaults.model
+                new_model = default_models[normalized_provider]
+                config.agents.defaults.model = new_model
+
+                # 如果 Control Plane 没有提供 api_base，使用默认值
+                if not api_base and normalized_provider == "minimax":
+                    p.api_base = "https://api.minimaxi.com/anthropic/v1"
+                    logger.info(f"受管模式: 设置 MiniMax Coding Plan API Base: {p.api_base}")
+
+                logger.info(f"受管模式: 强制切换模型 {old_model} -> {new_model} (匹配 provider={normalized_provider})")
+            
+            logger.info(f"受管模式: 最终配置 - provider={normalized_provider}, api_base={p.api_base}, model={config.agents.defaults.model}")
         else:
-            logger.warning(f"受管模式: 未知的 provider '{provider_name}'，无法注入 LLM Key")
+            logger.warning(f"受管模式: 未知的 provider '{normalized_provider}'，无法注入 LLM Key")
     else:
         logger.warning("受管模式: Control Plane 未分配 LLM Key，节点将无法调用 LLM")
 

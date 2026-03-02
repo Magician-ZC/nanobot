@@ -51,6 +51,7 @@ async def add_llm_key(
     name: str,
     provider: str,
     api_key: str,
+    api_base: str = "",
     max_concurrent: int = 5,
     usage_limit: int = 0,
 ) -> dict:
@@ -63,10 +64,10 @@ async def add_llm_key(
     try:
         await conn.execute(
             """INSERT INTO llm_key_pool
-               (id, name, provider, api_key_encrypted, max_concurrent,
+               (id, name, provider, api_key_encrypted, api_base, max_concurrent,
                 current_concurrent, usage_limit, total_usage, is_active, created_at)
-               VALUES (?, ?, ?, ?, ?, 0, ?, 0, 1, ?)""",
-            (key_id, name, provider, encrypted, max_concurrent, usage_limit, now),
+               VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, 1, ?)""",
+            (key_id, name, provider, encrypted, api_base, max_concurrent, usage_limit, now),
         )
         await conn.commit()
         return {
@@ -74,6 +75,7 @@ async def add_llm_key(
             "name": name,
             "provider": provider,
             "api_key_preview": _mask_key(api_key),
+            "api_base": api_base,
             "max_concurrent": max_concurrent,
             "current_concurrent": 0,
             "usage_limit": usage_limit,
@@ -90,7 +92,7 @@ async def list_llm_keys() -> list[dict]:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            """SELECT id, name, provider, api_key_encrypted, max_concurrent,
+            """SELECT id, name, provider, api_key_encrypted, api_base, max_concurrent,
                       current_concurrent, usage_limit, total_usage, is_active, created_at
                FROM llm_key_pool ORDER BY created_at"""
         )
@@ -105,7 +107,7 @@ async def get_llm_key(key_id: str) -> dict | None:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            """SELECT id, name, provider, api_key_encrypted, max_concurrent,
+            """SELECT id, name, provider, api_key_encrypted, api_base, max_concurrent,
                       current_concurrent, usage_limit, total_usage, is_active, created_at
                FROM llm_key_pool WHERE id = ?""",
             (key_id,),
@@ -191,13 +193,13 @@ async def allocate_key(node_id: str, provider: str | None = None) -> dict | None
         provider: 可选的提供商过滤
 
     Returns:
-        分配结果 {"key_id", "provider", "api_key", "model"} 或 None（无可用 Key）
+        分配结果 {"key_id", "provider", "api_key", "api_base", "model"} 或 None（无可用 Key）
     """
     conn = await get_connection()
     try:
         # 先检查节点是否已有分配
         cursor = await conn.execute(
-            """SELECT ka.key_id, kp.provider, kp.api_key_encrypted
+            """SELECT ka.key_id, kp.provider, kp.api_key_encrypted, kp.api_base
                FROM node_key_assignments ka
                JOIN llm_key_pool kp ON ka.key_id = kp.id
                WHERE ka.node_id = ? AND kp.is_active = 1""",
@@ -209,10 +211,11 @@ async def allocate_key(node_id: str, provider: str | None = None) -> dict | None
                 "key_id": existing[0],
                 "provider": existing[1],
                 "api_key": _decrypt_key(existing[2]),
+                "api_base": existing[3] or "",
             }
 
         # 查找可用 Key：启用、未满载
-        query = """SELECT id, provider, api_key_encrypted, max_concurrent, current_concurrent
+        query = """SELECT id, provider, api_key_encrypted, api_base, max_concurrent, current_concurrent
                    FROM llm_key_pool
                    WHERE is_active = 1 AND current_concurrent < max_concurrent"""
         params: list = []
@@ -247,6 +250,7 @@ async def allocate_key(node_id: str, provider: str | None = None) -> dict | None
             "key_id": key_id,
             "provider": row[1],
             "api_key": _decrypt_key(row[2]),
+            "api_base": row[3] or "",
         }
     finally:
         await conn.close()
@@ -379,12 +383,13 @@ def _row_to_key(row) -> dict:
         "name": row[1],
         "provider": row[2],
         "api_key_preview": _mask_key(decrypted),
-        "max_concurrent": row[4],
-        "current_concurrent": row[5],
-        "usage_limit": row[6],
-        "total_usage": row[7],
-        "is_active": bool(row[8]),
-        "created_at": row[9],
+        "api_base": row[4],
+        "max_concurrent": row[5],
+        "current_concurrent": row[6],
+        "usage_limit": row[7],
+        "total_usage": row[8],
+        "is_active": bool(row[9]),
+        "created_at": row[10],
     }
 
 
@@ -427,7 +432,7 @@ async def _allocate_key_excluding(
     """为节点分配 Key，可排除指定 Key"""
     conn = await get_connection()
     try:
-        query = """SELECT id, provider, api_key_encrypted, max_concurrent, current_concurrent
+        query = """SELECT id, provider, api_key_encrypted, api_base, max_concurrent, current_concurrent
                    FROM llm_key_pool
                    WHERE is_active = 1 AND current_concurrent < max_concurrent"""
         params: list = []
@@ -460,6 +465,7 @@ async def _allocate_key_excluding(
             "key_id": key_id,
             "provider": row[1],
             "api_key": _decrypt_key(row[2]),
+            "api_base": row[3] or "",
         }
     finally:
         await conn.close()

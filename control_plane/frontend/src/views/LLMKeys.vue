@@ -19,10 +19,17 @@
             <option value="">请选择</option>
             <option v-for="p in providers" :key="p" :value="p">{{ p }}</option>
           </select>
+          <small style="color:#909399;display:block;margin-top:4px">
+            注意：使用小写的 provider 名称（如 minimax），不是模型名称（如 MiniMax-M2.5）
+          </small>
         </div>
         <div class="form-group" v-if="!editingKey">
           <label>API Key</label>
           <input v-model="form.api_key" type="password" placeholder="sk-..." />
+        </div>
+        <div class="form-group">
+          <label>API Base (可选)</label>
+          <input v-model="form.api_base" placeholder="https://api.example.com/v1" />
         </div>
         <div class="form-group">
           <label>最大并发数</label>
@@ -56,6 +63,7 @@
             <th>名称</th>
             <th>Provider</th>
             <th>Key 预览</th>
+            <th>API Base</th>
             <th>并发 (当前/上限)</th>
             <th>用量 / 上限</th>
             <th>状态</th>
@@ -67,6 +75,7 @@
             <td>{{ k.name }}</td>
             <td>{{ k.provider }}</td>
             <td><code>{{ k.api_key_preview }}</code></td>
+            <td><code v-if="k.api_base" style="font-size:11px">{{ k.api_base }}</code><span v-else style="color:#ccc">-</span></td>
             <td>{{ k.current_concurrent }} / {{ k.max_concurrent }}</td>
             <td>{{ k.total_usage }} / {{ k.usage_limit || '∞' }}</td>
             <td>
@@ -190,7 +199,7 @@ export default {
   },
   methods: {
     emptyForm() {
-      return { name: '', provider: '', api_key: '', max_concurrent: 5, usage_limit: 0, is_active: true }
+      return { name: '', provider: '', api_key: '', api_base: '', max_concurrent: 5, usage_limit: 0, is_active: true }
     },
     async fetchData() {
       try {
@@ -213,6 +222,7 @@ export default {
         name: k.name,
         provider: k.provider,
         api_key: '',
+        api_base: k.api_base || '',
         max_concurrent: k.max_concurrent,
         usage_limit: k.usage_limit,
         is_active: k.is_active,
@@ -234,7 +244,14 @@ export default {
             is_active: this.form.is_active,
           })
         } else {
-          await llmKeys.create(this.form)
+          await llmKeys.create({
+            name: this.form.name,
+            provider: this.form.provider,
+            api_key: this.form.api_key,
+            api_base: this.form.api_base,
+            max_concurrent: this.form.max_concurrent,
+            usage_limit: this.form.usage_limit,
+          })
         }
         this.closeForm()
         await this.fetchData()

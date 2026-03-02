@@ -326,6 +326,7 @@ class ControlPlaneConfig(BaseModel):
     url: str = ""              # Control Plane 地址，为空且无 .managed 标记则独立模式
     api_key: str = ""          # 注册后获得的 API 密钥
     node_id: str = ""          # 节点 ID
+    register_token: str = ""   # 注册令牌（首次注册时使用）
     heartbeat_interval: int = 30  # 心跳间隔（秒）
 
 

@@ -1,0 +1,47 @@
+MiniMax Coding Plan API 配置完成
+
+## API 测试成功 ✅
+
+使用 curl 测试国内地址成功：
+```bash
+curl -X POST https://api.minimaxi.com/anthropic/v1/messages \
+  -H "x-api-key: YOUR_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "MiniMax-M2.5", "max_tokens": 100, "messages": [{"role": "user", "content": "你好"}]}'
+```
+
+返回：
+```json
+{
+  "id": "05f469a09ca78043...",
+  "type": "message",
+  "role": "assistant",
+  "model": "MiniMax-M2.5",
+  "content": [
+    {"type": "thinking", "thinking": "..."},
+    {"type": "text", "text": "你好！有什么我可以帮助你的吗？..."}
+  ],
+  "usage": {"input_tokens": 42, "output_tokens": 41}
+}
+```
+
+## 配置已更新
+
+- API Base: `https://api.minimaxi.com/anthropic` (国内地址)
+- 模型: `MiniMax-M2.5`
+
+## 重启节点
+
+```bash
+# Ctrl+C 停止
+nanobot gateway
+```
+
+预期日志：
+```
+受管模式: 设置 MiniMax Coding Plan API Base: https://api.minimaxi.com/anthropic
+受管模式: 强制切换模型 ... -> MiniMax-M2.5
+```
+
+现在应该可以正常工作了！

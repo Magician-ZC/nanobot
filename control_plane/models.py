@@ -260,6 +260,7 @@ class LLMKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     provider: str = Field(..., min_length=1, max_length=64)
     api_key: str = Field(..., min_length=1)
+    api_base: str = Field(default="", max_length=512)  # 可选的自定义 API 端点
     max_concurrent: int = Field(default=5, ge=1)
     usage_limit: int = Field(default=0, ge=0)
 
@@ -278,6 +279,7 @@ class LLMKeyResponse(BaseModel):
     name: str
     provider: str
     api_key_preview: str
+    api_base: str = ""  # 自定义 API 端点
     max_concurrent: int
     current_concurrent: int
     usage_limit: int

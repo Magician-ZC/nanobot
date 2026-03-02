@@ -291,6 +291,8 @@ class FeishuChannel(BaseChannel):
             .build()
 
         # Create event handler (only register message receive, ignore other events)
+        # Note: Feishu sends various events (like message read), but we only register what we need
+        # Unregistered events will be ignored by SDK with log messages, which is normal behavior
         event_handler = lark.EventDispatcherHandler.builder(
             self.config.encrypt_key or "",
             self.config.verification_token or "",
