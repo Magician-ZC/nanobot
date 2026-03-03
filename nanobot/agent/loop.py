@@ -99,6 +99,22 @@ class AgentLoop:
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
+        
+        # 初始化多 agent 流水线管理器
+        from nanobot.agent.pipeline import AgentPipeline
+        self.pipeline = AgentPipeline(
+            provider=provider,
+            workspace=workspace,
+            bus=bus,
+            model=self.model,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+            reasoning_effort=reasoning_effort,
+            brave_api_key=brave_api_key,
+            web_proxy=web_proxy,
+            exec_config=self.exec_config,
+            restrict_to_workspace=restrict_to_workspace,
+        )
 
         self._running = False
         self._mcp_servers = mcp_servers or {}
@@ -132,6 +148,10 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+        
+        # 注册多 agent 流水线工具
+        from nanobot.agent.tools.pipeline import PipelineTool
+        self.tools.register(PipelineTool(manager=self.pipeline))
 
     async def _connect_mcp(self) -> None:
         """Connect to configured MCP servers (one-time, lazy)."""
@@ -157,7 +177,7 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron"):
+        for name in ("message", "spawn", "cron", "pipeline"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
