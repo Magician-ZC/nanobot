@@ -155,6 +155,16 @@ class ChannelManager:
         self.channels["feishu_gateway"] = None
         logger.debug("Feishu gateway channel registered (managed mode)")
 
+        self._validate_allow_from()
+
+    def _validate_allow_from(self) -> None:
+        for name, ch in self.channels.items():
+            if getattr(ch.config, "allow_from", None) == []:
+                raise SystemExit(
+                    f'Error: "{name}" has empty allowFrom (denies all). '
+                    f'Set ["*"] to allow everyone, or add specific user IDs.'
+                )
+
     async def _start_channel(self, name: str, channel: BaseChannel) -> None:
         """Start a channel and log any exceptions."""
         # Skip virtual channels (e.g., feishu_gateway in managed mode)
