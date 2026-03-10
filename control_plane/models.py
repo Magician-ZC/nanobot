@@ -84,6 +84,7 @@ class SkillEntryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: str = ""
     source: str = Field(default="custom", pattern=r"^(builtin|workspace|custom)$")
+    content: str = ""
 
 
 class SkillEntryResponse(BaseModel):
@@ -92,6 +93,7 @@ class SkillEntryResponse(BaseModel):
     name: str
     description: str
     source: str
+    content: str = ""
     version: int
     checksum: str
     file_size: int
@@ -103,6 +105,16 @@ class SkillEntryUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=128)
     description: str | None = None
     source: str | None = Field(default=None, pattern=r"^(builtin|workspace|custom)$")
+    content: str | None = None
+
+
+class SkillGenerate(BaseModel):
+    """LLM 生成 Skill 请求"""
+    name: str = Field(..., min_length=1, max_length=128)
+    purpose: str = Field(..., min_length=1, max_length=1000, description="Skill 用途/目标")
+    description: str = Field(default="", max_length=500, description="补充描述")
+    tools_hint: str = Field(default="", max_length=500, description="可用工具提示，如: web_search, filesystem")
+    language: str = Field(default="中文", max_length=50, description="输出语言")
 
 
 
@@ -169,6 +181,7 @@ class ResourcePolicyUpdate(BaseModel):
     """更新节点策略请求"""
     allowed_skills: list[str] = Field(default_factory=list)
     allowed_mcp_servers: list[str] = Field(default_factory=list)
+    allowed_personas: list[str] = Field(default_factory=list)
 
 
 class ResourcePolicyResponse(BaseModel):
@@ -177,9 +190,11 @@ class ResourcePolicyResponse(BaseModel):
     node_id: str
     allowed_skills: list[str]
     allowed_mcp_servers: list[str]
+    allowed_personas: list[str] = Field(default_factory=list)
     version: int
     updated_at: str
     skill_versions: dict[str, dict] = Field(default_factory=dict)
+    persona_versions: dict[str, dict] = Field(default_factory=dict)
 
 
 # ── Node Config 模型 ───────────────────────────────────────────────
@@ -429,4 +444,74 @@ class SessionResponse(BaseModel):
     message_count: int
     last_message_at: str
     node_id: str | None = None
+
+
+# ── Persona 模型 ──────────────────────────────────────────────────
+
+class PersonaCreate(BaseModel):
+    """创建 Persona 请求"""
+    name: str = Field(..., min_length=1, max_length=128)
+    persona_content: str = Field(default="", max_length=100000)
+    description: str = ""
+    max_memory_chars: int = Field(default=50000, ge=1000, le=500000)
+
+
+class PersonaGenerate(BaseModel):
+    """LLM 生成 Persona 请求"""
+    name: str = Field(..., min_length=1, max_length=128)
+    purpose: str = Field(..., min_length=1, max_length=500, description="用途/职责")
+    age: str = Field(default="", max_length=50, description="年龄设定")
+    profession: str = Field(default="", max_length=100, description="职业设定")
+    traits: str = Field(default="", max_length=500, description="额外性格特征")
+    language: str = Field(default="中文", max_length=50, description="回复语言")
+    max_memory_chars: int = Field(default=50000, ge=1000, le=500000)
+
+
+class PersonaUpdate(BaseModel):
+    """更新 Persona 请求"""
+    persona_content: str | None = None
+    description: str | None = None
+    max_memory_chars: int | None = Field(default=None, ge=1000, le=500000)
+
+
+class PersonaResponse(BaseModel):
+    """Persona 响应"""
+    id: str
+    name: str
+    description: str
+    persona_content: str
+    version: int
+    max_memory_chars: int
+    created_at: str
+    updated_at: str
+
+
+class PersonaMemoryUpload(BaseModel):
+    """节点上报 Persona 记忆"""
+    persona_name: str = Field(..., min_length=1)
+    memory_content: str
+    history_entries: str = ""
+
+
+class PersonaMemoryBatchUpload(BaseModel):
+    """批量上报 Persona 记忆"""
+    memories: list[PersonaMemoryUpload]
+
+
+class PersonaMemoryResponse(BaseModel):
+    """Persona 记忆响应"""
+    persona_id: str
+    node_id: str
+    memory_content: str
+    memory_version: int
+    updated_at: str
+
+
+class PersonaSyncResponse(BaseModel):
+    """节点拉取 Persona 同步数据"""
+    name: str
+    persona_content: str
+    version: int
+    global_memory: str = ""
+    global_memory_version: int = 0
 

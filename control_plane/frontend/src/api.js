@@ -110,6 +110,10 @@ export const skills = {
   update: (id, data) =>
     request(`/api/skills/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   delete: (id) => request(`/api/skills/${id}`, { method: 'DELETE' }),
+  generate: (data) =>
+    request('/api/skills/generate', { method: 'POST', body: JSON.stringify(data) }),
+  generatePreview: (data) =>
+    request('/api/skills/generate-preview', { method: 'POST', body: JSON.stringify(data) }),
 }
 
 // ── MCP Servers API ──
@@ -192,6 +196,25 @@ export const tokenUsage = {
     const qs = new URLSearchParams(params).toString()
     return request(`/api/nodes/${nodeId}/token-usage${qs ? '?' + qs : ''}`)
   },
+}
+
+// ── Personas API ──
+export const personas = {
+  list: () => request('/api/personas'),
+  create: (data) =>
+    request('/api/personas', { method: 'POST', body: JSON.stringify(data) }),
+  get: (id) => request(`/api/personas/${id}`),
+  update: (id, data) =>
+    request(`/api/personas/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  delete: (id) => request(`/api/personas/${id}`, { method: 'DELETE' }),
+  getMemory: (id) => request(`/api/personas/${id}/memory`),
+  merge: (id) => request(`/api/personas/${id}/merge`, { method: 'POST' }),
+  compress: (id) => request(`/api/personas/${id}/compress`, { method: 'POST' }),
+  compressAll: () => request('/api/personas/compress-all', { method: 'POST' }),
+  generate: (data) =>
+    request('/api/personas/generate', { method: 'POST', body: JSON.stringify(data) }),
+  generatePreview: (data) =>
+    request('/api/personas/generate-preview', { method: 'POST', body: JSON.stringify(data) }),
 }
 
 // ── Feishu Gateway API ──

@@ -15,6 +15,7 @@ from control_plane.models import (
     SkillEntryCreate,
     SkillEntryResponse,
     SkillEntryUpdate,
+    SkillGenerate,
 )
 from control_plane.permissions import check_node_access
 from control_plane.policies import (
@@ -31,6 +32,83 @@ from control_plane.policies import (
 )
 
 router = APIRouter()
+
+
+# ── Skill 生成提示词 ─────────────────────────────────────────────
+
+def _build_skill_gen_prompt(body) -> str:
+    """为 openclaw 系统构建 Skill 生成提示词。
+    生成符合 SKILL.md 格式的完整 Skill 定义。
+    """
+    context_parts = [
+        f"- Skill 名称: {body.name}",
+        f"- 核心用途: {body.purpose}",
+    ]
+    if body.description:
+        context_parts.append(f"- 补充描述: {body.description}")
+    if body.tools_hint:
+        context_parts.append(f"- 可用工具: {body.tools_hint}")
+    context_parts.append(f"- 输出语言: {body.language}")
+    context_str = "\n".join(context_parts)
+
+    return f"""# Task
+你正在为 openclaw（一个多 Agent 协同系统）设计一个 Skill。
+Skill 是 Agent 的能力模块，定义了特定任务的执行流程、步骤和质量标准。
+
+## 输入参数
+{context_str}
+
+## 输出格式要求
+生成一个完整的 SKILL.md 文件内容，必须包含：
+
+1. **YAML Frontmatter**（用 `---` 包裹）：
+   - `name`: Skill 名称
+   - `description`: 清晰描述 Skill 的用途和触发场景
+
+2. **Markdown 正文**，包含以下结构：
+   - 标题和概述
+   - 执行步骤（详细的分步流程）
+   - 输出格式/结构要求
+   - 质量标准
+   - 如果有变量输入，用 `$ARGUMENTS` 占位符
+
+## 设计准则
+- 步骤要具体可执行，不要泛泛而谈
+- 每个步骤包含明确的子任务
+- 质量标准要可衡量
+- 保持简洁，避免冗余说明
+- Agent 已经很聪明，只写它不知道的领域知识和流程
+
+## 示例参考
+```
+---
+name: example-skill
+description: 示例 Skill，用于展示格式。Use when ...
+---
+
+# 标题
+
+简要描述。
+
+## 执行步骤
+
+1. **步骤一**：
+   - 子任务 a
+   - 子任务 b
+
+2. **步骤二**：
+   - 子任务 a
+
+## 质量标准
+- 标准 1
+- 标准 2
+
+## 输入
+$ARGUMENTS
+```
+
+---
+**注意**：直接输出完整的 SKILL.md 文件内容（包含 YAML frontmatter），禁止任何多余的解释。全文使用 {body.language} 撰写。"""
 
 
 # ── Skill 注册表 ──────────────────────────────────────────────────
@@ -52,7 +130,7 @@ async def create_skill_endpoint(
 ):
     """注册新 Skill（仅 admin）"""
     try:
-        skill = await create_skill(req.name, req.description, req.source)
+        skill = await create_skill(req.name, req.description, req.source, req.content)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(e)
@@ -67,7 +145,7 @@ async def update_skill_endpoint(
     """更新 Skill（仅 admin）"""
     try:
         result = await update_skill(
-            skill_id, name=req.name, description=req.description, source=req.source
+            skill_id, name=req.name, description=req.description, source=req.source, content=req.content
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
@@ -82,6 +160,53 @@ async def delete_skill_endpoint(skill_id: str, _admin: dict = Depends(require_ad
     success = await delete_skill(skill_id)
     if not success:
         raise HTTPException(status_code=404, detail="Skill not found")
+
+
+@router.post("/api/skills/generate")
+async def generate_skill_endpoint(
+    body: SkillGenerate, _admin: dict = Depends(require_admin),
+):
+    """用 LLM 生成 Skill 定义并创建（仅 admin）"""
+    from control_plane.llm_helper import llm_chat
+    from control_plane.policies import get_skill_by_name
+
+    existing = await get_skill_by_name(body.name)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Skill '{body.name}' already exists")
+
+    prompt = _build_skill_gen_prompt(body)
+    content = await llm_chat(
+        prompt,
+        system="你是 openclaw 系统的 Skill 架构师，专精于为多 Agent 协同系统设计高质量的任务技能模块。",
+        max_tokens=4096,
+    )
+    if not content:
+        raise HTTPException(status_code=503, detail="LLM 服务不可用，请检查 Key 池配置")
+
+    desc = body.description or body.purpose[:100]
+    skill = await create_skill(
+        name=body.name, description=desc, source="custom", content=content.strip(),
+    )
+    return SkillEntryResponse(**skill)
+
+
+@router.post("/api/skills/generate-preview")
+async def generate_skill_preview_endpoint(
+    body: SkillGenerate, _admin: dict = Depends(require_admin),
+):
+    """预览 LLM 生成的 Skill 定义（不创建，仅返回内容）"""
+    from control_plane.llm_helper import llm_chat
+
+    prompt = _build_skill_gen_prompt(body)
+    content = await llm_chat(
+        prompt,
+        system="你是 openclaw 系统的 Skill 架构师，专精于为多 Agent 协同系统设计高质量的任务技能模块。",
+        max_tokens=4096,
+    )
+    if not content:
+        raise HTTPException(status_code=503, detail="LLM 服务不可用，请检查 Key 池配置")
+
+    return {"content": content.strip()}
 
 
 # ── MCP Server 注册表 ─────────────────────────────────────────────
@@ -270,7 +395,9 @@ async def update_policy_endpoint(
 ):
     """更新节点资源策略（仅 admin），版本号自动递增"""
     try:
-        policy = await update_node_policy(id, req.allowed_skills, req.allowed_mcp_servers)
+        policy = await update_node_policy(
+            id, req.allowed_skills, req.allowed_mcp_servers, req.allowed_personas
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(e)

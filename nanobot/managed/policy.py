@@ -162,6 +162,28 @@ class PolicyEnforcer:
                     )
         return result
 
+    def filter_personas(self, all_persona_names: list[str]) -> list[str]:
+        """根据策略过滤可用的 Persona 列表
+
+        Args:
+            all_persona_names: 所有本地 Persona 名称
+
+        Returns:
+            仅包含策略允许的 Persona 名称列表
+        """
+        allowed = set(self._policy.allowed_personas)
+        result = []
+        for name in all_persona_names:
+            if name in allowed:
+                result.append(name)
+            else:
+                logger.warning("Persona '%s' 未在策略允许列表中，已跳过", name)
+                if self._audit_logger:
+                    self._audit_logger.log_violation(
+                        "persona_access", {"persona": name, "reason": "not_in_policy"}
+                    )
+        return result
+
     def save_cache(self) -> None:
         """将策略缓存到本地文件系统
 
@@ -171,8 +193,10 @@ class PolicyEnforcer:
         cache_data = {
             "allowed_skills": self._policy.allowed_skills,
             "allowed_mcp_servers": self._policy.allowed_mcp_servers,
+            "allowed_personas": self._policy.allowed_personas,
             "policy_version": self._policy.version,
             "skill_versions": self._policy.skill_versions,
+            "persona_versions": self._policy.persona_versions,
             "cached_at": self._cached_at,
         }
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -198,8 +222,10 @@ class PolicyEnforcer:
             policy = ResourcePolicy(
                 allowed_skills=data.get("allowed_skills", []),
                 allowed_mcp_servers=data.get("allowed_mcp_servers", []),
+                allowed_personas=data.get("allowed_personas", []),
                 version=data.get("policy_version", 0),
                 skill_versions=data.get("skill_versions", {}),
+                persona_versions=data.get("persona_versions", {}),
             )
             enforcer = cls(policy=policy, cache_path=cache_path)
             enforcer._cached_at = data.get("cached_at")

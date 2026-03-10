@@ -498,8 +498,11 @@ def _apply_remote_config(config: Config, remote_config: dict) -> None:
 _MANAGED_HEARTBEAT_INTERVAL = 30
 
 
-async def _managed_heartbeat_loop(client, policy_enforcer, config):
-    """受管模式下定期向 Control Plane 发送心跳，保持节点 online 状态"""
+async def _managed_heartbeat_loop(client, policy_enforcer, config, persona_syncer=None):
+    """受管模式下定期向 Control Plane 发送心跳，保持节点 online 状态
+
+    当检测到策略更新时，同步 Persona 数据。
+    """
     from nanobot.managed.client import ManagedClient
     interval = _MANAGED_HEARTBEAT_INTERVAL
     while True:
@@ -513,6 +516,20 @@ async def _managed_heartbeat_loop(client, policy_enforcer, config):
                     f"[yellow]ℹ[/yellow] Control Plane 有更新 "
                     f"(config: v{resp.latest_config_version}, policy: v{resp.latest_policy_version})"
                 )
+                # 策略更新时重新同步 Persona
+                if resp.has_policy_update and persona_syncer:
+                    try:
+                        policy = await client.fetch_policy()
+                        policy_enforcer.policy = policy
+                        policy_enforcer.save_cache()
+                        sync_result = await persona_syncer.sync(policy.allowed_personas)
+                        if sync_result.synced or sync_result.removed:
+                            console.print(
+                                f"[green]✓[/green] Persona 同步: "
+                                f"更新={len(sync_result.synced)}, 删除={len(sync_result.removed)}"
+                            )
+                    except Exception as e:
+                        console.print(f"[yellow]警告: Persona 同步失败: {e}[/yellow]")
         except Exception as e:
             console.print(f"[yellow]警告: 心跳发送失败: {e}[/yellow]")
         await asyncio.sleep(interval)
@@ -550,6 +567,7 @@ def gateway(
     # ── 受管模式检测 ──
     managed = _is_managed_mode(config)
     gateway_msg_client = None
+    persona_syncer = None
     
     if managed:
         _validate_managed_config(config)
@@ -573,6 +591,23 @@ def gateway(
             bus=bus,
         )
         console.print(f"[green]✓[/green] 网关消息客户端已初始化 (节点: {cp.node_id[:8]}...)")
+        
+        # 初始化 Persona 同步器并执行首次同步
+        from nanobot.managed.persona_sync import PersonaSyncer
+        personas_dir = config.workspace_path / "personas"
+        persona_syncer = PersonaSyncer(client=managed_client, personas_dir=personas_dir)
+        
+        import asyncio as _aio
+        async def _initial_persona_sync():
+            try:
+                result = await persona_syncer.sync(policy_enforcer.policy.allowed_personas)
+                if result.synced:
+                    console.print(f"[green]✓[/green] Persona 初始同步: {len(result.synced)} 个已同步")
+            except Exception as e:
+                console.print(f"[yellow]警告: Persona 初始同步失败: {e}[/yellow]")
+        _aio.run(_initial_persona_sync())
+        # asyncio.run() 结束后重置 httpx client
+        managed_client._client = None
     
     provider = _make_provider(config)
     session_manager = SessionManager(config.workspace_path)
@@ -613,6 +648,10 @@ def gateway(
     if managed:
         agent._managed_client = managed_client
         agent._policy_enforcer = policy_enforcer
+        # 将 managed_client 传递给 pipeline 和 subagent 的 persona_manager
+        # 使其在受管模式下人格只读 + 记忆自动上报
+        agent.pipeline.persona_manager._managed_client = managed_client
+        agent.subagents.persona_manager._managed_client = managed_client
 
     # Set cron callback (needs agent)
     async def on_cron_job(job: CronJob) -> str | None:
@@ -732,7 +771,8 @@ def gateway(
             if managed:
                 # 立即发一次心跳让节点变为 online，然后启动定期心跳
                 asyncio.create_task(_managed_heartbeat_loop(
-                    managed_client, policy_enforcer, config
+                    managed_client, policy_enforcer, config,
+                    persona_syncer=persona_syncer,
                 ))
             await asyncio.gather(
                 agent.run(),

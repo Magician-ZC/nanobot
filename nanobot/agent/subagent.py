@@ -1,4 +1,4 @@
-"""Subagent manager for background task execution."""
+"""Subagent manager for background task execution — 支持独立人格和记忆积累。"""
 
 import asyncio
 import json
@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger
 
+from nanobot.agent.persona import AgentPersona, PersonaManager
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
@@ -19,7 +20,7 @@ from nanobot.providers.base import LLMProvider
 
 
 class SubagentManager:
-    """Manages background subagent execution."""
+    """Manages background subagent execution with persona support."""
 
     def __init__(
         self,
@@ -49,6 +50,7 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
+        self.persona_manager = PersonaManager(workspace)
 
     async def spawn(
         self,
@@ -57,14 +59,19 @@ class SubagentManager:
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
         session_key: str | None = None,
+        persona: str | None = None,
     ) -> str:
-        """Spawn a subagent to execute a task in the background."""
+        """Spawn a subagent to execute a task in the background.
+        
+        Args:
+            persona: 人格名称，对应 workspace/personas/{name}/。不指定则使用通用 subagent 人格。
+        """
         task_id = str(uuid.uuid4())[:8]
         display_label = label or task[:30] + ("..." if len(task) > 30 else "")
         origin = {"channel": origin_channel, "chat_id": origin_chat_id}
 
         bg_task = asyncio.create_task(
-            self._run_subagent(task_id, task, display_label, origin)
+            self._run_subagent(task_id, task, display_label, origin, persona)
         )
         self._running_tasks[task_id] = bg_task
         if session_key:
@@ -88,12 +95,18 @@ class SubagentManager:
         task: str,
         label: str,
         origin: dict[str, str],
+        persona_name: str | None = None,
     ) -> None:
         """Execute the subagent task and announce the result."""
         logger.info("Subagent [{}] starting task: {}", task_id, label)
 
+        # 获取人格
+        agent_persona: AgentPersona | None = None
+        if persona_name:
+            agent_persona = self.persona_manager.get(persona_name)
+
         try:
-            # Build subagent tools (no message tool, no spawn tool)
+            # Build subagent tools
             tools = ToolRegistry()
             allowed_dir = self.workspace if self.restrict_to_workspace else None
             tools.register(ReadFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
@@ -109,13 +122,13 @@ class SubagentManager:
             tools.register(WebSearchTool(api_key=self.brave_api_key, proxy=self.web_proxy))
             tools.register(WebFetchTool(proxy=self.web_proxy))
             
-            system_prompt = self._build_subagent_prompt()
+            system_prompt = self._build_subagent_prompt(agent_persona)
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
 
-            # Run agent loop (limited iterations)
+            # Run agent loop
             max_iterations = 15
             iteration = 0
             final_result: str | None = None
@@ -133,7 +146,6 @@ class SubagentManager:
                 )
 
                 if response.has_tool_calls:
-                    # Add assistant message with tool calls
                     tool_call_dicts = [
                         {
                             "id": tc.id,
@@ -151,7 +163,6 @@ class SubagentManager:
                         "tool_calls": tool_call_dicts,
                     })
 
-                    # Execute tools
                     for tool_call in response.tool_calls:
                         args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                         logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
@@ -170,6 +181,18 @@ class SubagentManager:
                 final_result = "Task completed but no final response was generated."
 
             logger.info("Subagent [{}] completed successfully", task_id)
+
+            # 整理经验到长期记忆
+            if agent_persona:
+                asyncio.create_task(
+                    agent_persona.consolidate_experience(
+                        messages=messages,
+                        provider=self.provider,
+                        model=self.model,
+                        task_summary=f"[Subagent {task_id}] {task}",
+                    )
+                )
+
             await self._announce_result(task_id, label, task, final_result, origin, "ok")
 
         except Exception as e:
@@ -198,7 +221,6 @@ Result:
 
 Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
 
-        # Inject as system message to trigger main agent
         msg = InboundMessage(
             channel="system",
             sender_id="subagent",
@@ -209,13 +231,21 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
         await self.bus.publish_inbound(msg)
         logger.debug("Subagent [{}] announced result to {}:{}", task_id, origin['channel'], origin['chat_id'])
     
-    def _build_subagent_prompt(self) -> str:
-        """Build a focused system prompt for the subagent."""
+    def _build_subagent_prompt(self, persona: AgentPersona | None = None) -> str:
+        """Build system prompt for the subagent, with optional persona context."""
         from nanobot.agent.context import ContextBuilder
         from nanobot.agent.skills import SkillsLoader
 
         time_ctx = ContextBuilder._build_runtime_context(None, None)
-        parts = [f"""# Subagent
+        parts: list[str] = []
+
+        # 如果有人格，优先使用人格上下文
+        if persona:
+            persona_ctx = persona.get_full_context()
+            if persona_ctx:
+                parts.append(persona_ctx)
+
+        parts.append(f"""# Subagent
 
 {time_ctx}
 
@@ -223,7 +253,7 @@ You are a subagent spawned by the main agent to complete a specific task.
 Stay focused on the assigned task. Your final response will be reported back to the main agent.
 
 ## Workspace
-{self.workspace}"""]
+{self.workspace}""")
 
         skills_summary = SkillsLoader(self.workspace).build_skills_summary()
         if skills_summary:

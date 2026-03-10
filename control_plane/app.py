@@ -17,6 +17,7 @@ from control_plane.routes.logs import router as logs_router
 from control_plane.routes.nodes import router as nodes_router
 from control_plane.routes.policies import router as policies_router
 from control_plane.routes.skill_store import router as skill_store_router
+from control_plane.routes.personas import router as personas_router
 from control_plane.routes.feishu_gateway import (
     router as feishu_gateway_router,
     set_gateway_service,
@@ -85,6 +86,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     app.include_router(nodes_router)
     app.include_router(policies_router)
     app.include_router(skill_store_router)
+    app.include_router(personas_router)
     app.include_router(tasks_router)
     app.include_router(feishu_gateway_router)
 

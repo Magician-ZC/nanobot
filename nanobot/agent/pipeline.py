@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from loguru import logger
 
+from nanobot.agent.persona import AgentPersona, PersonaManager
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.shell import ExecTool
@@ -41,6 +42,7 @@ class PipelineStage:
     tools: list[str] = field(default_factory=list)  # 允许使用的工具名称
     max_iterations: int = 10
     depends_on: list[str] = field(default_factory=list)  # 依赖的前置阶段
+    persona: str | None = None  # 人格名称，None 则使用 role.value 作为默认人格
 
 
 @dataclass
@@ -55,8 +57,8 @@ class AgentPipeline:
     """
     多 Agent 流水线编排器
     
-    支持定义多个 agent 角色，按照流水线顺序协作完成复杂任务。
-    每个 agent 专注于特定职责，结果通过上下文传递给下一个 agent。
+    每个 agent 拥有独立的人格（PERSONA.md）和持久化记忆（MEMORY.md），
+    执行任务后自动整理经验，使 agent 随着使用越来越有经验。
     """
 
     def __init__(
@@ -89,6 +91,10 @@ class AgentPipeline:
         
         self._running_pipelines: dict[str, asyncio.Task] = {}
         self._all_tools = self._build_all_tools()
+        
+        # 人格管理器 — 确保默认人格文件存在
+        self.persona_manager = PersonaManager(workspace)
+        self.persona_manager.ensure_default_personas()
 
     def _build_all_tools(self) -> ToolRegistry:
         """构建完整的工具集"""
@@ -120,36 +126,56 @@ class AgentPipeline:
         
         return tools
 
+    def _get_stage_persona(self, stage: PipelineStage) -> AgentPersona:
+        """获取阶段对应的人格，优先使用 stage.persona，否则用 role.value"""
+        persona_name = stage.persona or stage.role.value
+        return self.persona_manager.get(persona_name)
+
     def _build_stage_prompt(
         self,
         stage: PipelineStage,
         context: PipelineContext,
     ) -> str:
-        """构建阶段提示词"""
-        parts = [f"# Role: {stage.role.value.title()}\n"]
+        """构建阶段提示词 — 包含人格定义、长期记忆和任务上下文"""
+        persona = self._get_stage_persona(stage)
+        parts: list[str] = []
+
+        # 加载人格上下文（人格定义 + 长期记忆）
+        persona_context = persona.get_full_context()
+        if persona_context:
+            parts.append(persona_context)
+        else:
+            # 没有人格文件时的 fallback
+            parts.append(f"# Role: {stage.role.value.title()}\n")
+            role_descriptions = {
+                AgentRole.PLANNER: "你负责分析任务并制定详细的执行计划。将复杂任务分解为可执行的步骤。",
+                AgentRole.RESEARCHER: "你负责收集信息和研究。使用搜索工具查找相关资料和最佳实践。",
+                AgentRole.CODER: "你负责编写代码实现。根据计划和研究结果编写高质量的代码。",
+                AgentRole.REVIEWER: "你负责代码审查。检查代码质量、安全性和最佳实践。",
+                AgentRole.TESTER: "你负责测试验证。编写和执行测试，确保功能正确性。",
+                AgentRole.INTEGRATOR: "你负责整合所有结果。汇总各阶段输出，生成最终交付物。",
+            }
+            parts.append(role_descriptions.get(stage.role, ""))
         
-        # 添加角色描述
-        role_descriptions = {
-            AgentRole.PLANNER: "你负责分析任务并制定详细的执行计划。将复杂任务分解为可执行的步骤。",
-            AgentRole.RESEARCHER: "你负责收集信息和研究。使用搜索工具查找相关资料和最佳实践。",
-            AgentRole.CODER: "你负责编写代码实现。根据计划和研究结果编写高质量的代码。",
-            AgentRole.REVIEWER: "你负责代码审查。检查代码质量、安全性和最佳实践。",
-            AgentRole.TESTER: "你负责测试验证。编写和执行测试，确保功能正确性。",
-            AgentRole.INTEGRATOR: "你负责整合所有结果。汇总各阶段输出，生成最终交付物。",
-        }
-        parts.append(role_descriptions.get(stage.role, ""))
+        # 运行时上下文
+        from nanobot.agent.context import ContextBuilder
+        runtime_ctx = ContextBuilder._build_runtime_context(None, None)
+        parts.append(runtime_ctx)
+
+        # workspace 信息
+        parts.append(f"## Workspace\n{self.workspace}")
         
-        # 添加任务描述
+        # 任务描述
         parts.append(f"\n## Task\n{context.task}")
         
-        # 添加前置阶段的结果
+        # 前置阶段的结果
         if stage.depends_on:
             parts.append("\n## Previous Stage Results\n")
             for dep_stage in stage.depends_on:
                 if result := context.stage_results.get(dep_stage):
                     parts.append(f"### {dep_stage}\n{result}\n")
         
-        # 添加阶段特定指令
+        # 阶段特定指令
         parts.append(f"\n## Instructions\n{stage.prompt_template}")
         
         return "\n".join(parts)
@@ -160,12 +186,13 @@ class AgentPipeline:
         context: PipelineContext,
         pipeline_id: str,
     ) -> str:
-        """执行单个流水线阶段"""
+        """执行单个流水线阶段，完成后自动整理经验到长期记忆"""
+        persona = self._get_stage_persona(stage)
         logger.info(
-            "Pipeline [{}] executing stage '{}' with role '{}'",
+            "Pipeline [{}] executing stage '{}' (persona: '{}')",
             pipeline_id,
             stage.name,
-            stage.role.value,
+            persona.name,
         )
         
         # 构建该阶段的工具集
@@ -196,7 +223,6 @@ class AgentPipeline:
             )
             
             if response.has_tool_calls:
-                # 添加助手消息和工具调用
                 tool_call_dicts = [
                     {
                         "id": tc.id,
@@ -214,7 +240,6 @@ class AgentPipeline:
                     "tool_calls": tool_call_dicts,
                 })
                 
-                # 执行工具
                 for tool_call in response.tool_calls:
                     logger.debug(
                         "Pipeline [{}] stage '{}' executing tool: {}",
@@ -237,6 +262,17 @@ class AgentPipeline:
             final_result = f"Stage '{stage.name}' completed but no final response was generated."
         
         logger.info("Pipeline [{}] stage '{}' completed", pipeline_id, stage.name)
+        
+        # 异步整理经验到长期记忆（不阻塞主流程）
+        asyncio.create_task(
+            persona.consolidate_experience(
+                messages=messages,
+                provider=self.provider,
+                model=self.model,
+                task_summary=f"[Pipeline {pipeline_id}] Stage: {stage.name} | Task: {context.task}",
+            )
+        )
+        
         return final_result
 
     async def execute(
@@ -247,48 +283,30 @@ class AgentPipeline:
         origin_chat_id: str = "direct",
         on_stage_complete: Callable[[str, str], None] | None = None,
     ) -> str:
-        """
-        执行多 agent 流水线
-        
-        Args:
-            task: 要执行的任务描述
-            stages: 流水线阶段列表
-            origin_channel: 发起渠道
-            origin_chat_id: 发起会话 ID
-            on_stage_complete: 阶段完成回调函数
-        
-        Returns:
-            最终结果
-        """
+        """执行多 agent 流水线"""
         pipeline_id = str(uuid.uuid4())[:8]
         logger.info("Starting pipeline [{}] with {} stages", pipeline_id, len(stages))
         
         context = PipelineContext(task=task)
         
         try:
-            # 按顺序执行各个阶段
             for stage in stages:
-                # 检查依赖
                 for dep in stage.depends_on:
                     if dep not in context.stage_results:
                         raise ValueError(
                             f"Stage '{stage.name}' depends on '{dep}' which hasn't been executed"
                         )
                 
-                # 执行阶段
                 result = await self._execute_stage(stage, context, pipeline_id)
                 context.stage_results[stage.name] = result
                 
-                # 回调通知
                 if on_stage_complete:
                     on_stage_complete(stage.name, result)
             
-            # 生成最终报告
             final_report = self._generate_final_report(context, stages)
             
             logger.info("Pipeline [{}] completed successfully", pipeline_id)
             
-            # 通知主 agent
             await self._announce_result(
                 pipeline_id,
                 task,

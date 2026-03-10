@@ -9,7 +9,7 @@ import aiosqlite
 DEFAULT_DB_PATH = Path(os.environ.get("CP_DB_PATH", "data/control_plane.db"))
 
 # 当前 schema 版本
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 async def get_connection(db_path: Path | None = None) -> aiosqlite.Connection:
@@ -275,7 +275,6 @@ _V2_INDEXES = [
 async def _apply_v3(conn: aiosqlite.Connection) -> None:
     """应用 V3 schema：为 llm_key_pool 添加 api_base 列"""
     try:
-        # 检查列是否已存在
         cursor = await conn.execute(
             "PRAGMA table_info(llm_key_pool)"
         )
@@ -289,6 +288,91 @@ async def _apply_v3(conn: aiosqlite.Connection) -> None:
     except Exception as e:
         # 如果列已存在或其他错误，忽略
         pass
+
+
+# ── Schema V4: Persona 注册表和记忆存储 ──────────────────────────────
+
+_PERSONA_REGISTRY_TABLE = """
+CREATE TABLE IF NOT EXISTS persona_registry (
+    id TEXT PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    persona_content TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    max_memory_chars INTEGER NOT NULL DEFAULT 50000,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_PERSONA_MEMORY_TABLE = """
+CREATE TABLE IF NOT EXISTS persona_memory (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT NOT NULL REFERENCES persona_registry(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    memory_content TEXT NOT NULL DEFAULT '',
+    history_content TEXT NOT NULL DEFAULT '',
+    memory_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(persona_id, node_id)
+);
+"""
+
+_PERSONA_GLOBAL_MEMORY_TABLE = """
+CREATE TABLE IF NOT EXISTS persona_global_memory (
+    id TEXT PRIMARY KEY,
+    persona_id TEXT UNIQUE NOT NULL REFERENCES persona_registry(id) ON DELETE CASCADE,
+    memory_content TEXT NOT NULL DEFAULT '',
+    merge_version INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+_V4_TABLES = [
+    _PERSONA_REGISTRY_TABLE,
+    _PERSONA_MEMORY_TABLE,
+    _PERSONA_GLOBAL_MEMORY_TABLE,
+]
+
+_V4_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_persona_memory_persona_id ON persona_memory(persona_id);",
+    "CREATE INDEX IF NOT EXISTS idx_persona_memory_node_id ON persona_memory(node_id);",
+    "CREATE INDEX IF NOT EXISTS idx_persona_global_memory_persona_id ON persona_global_memory(persona_id);",
+]
+
+
+async def _apply_v4(conn: aiosqlite.Connection) -> None:
+    """应用 V4 schema：创建 Persona 注册表和记忆存储表"""
+    for table_sql in _V4_TABLES:
+        await conn.execute(table_sql)
+    for index_sql in _V4_INDEXES:
+        await conn.execute(index_sql)
+    # resource_policies 增加 allowed_personas 列
+    try:
+        cursor = await conn.execute("PRAGMA table_info(resource_policies)")
+        columns = await cursor.fetchall()
+        column_names = [col[1] for col in columns]
+        if "allowed_personas" not in column_names:
+            await conn.execute(
+                "ALTER TABLE resource_policies ADD COLUMN allowed_personas TEXT DEFAULT '[]'"
+            )
+    except Exception:
+        pass
+
+
+async def _apply_v5(conn: aiosqlite.Connection) -> None:
+    """应用 V5 schema：为 skill_registry 添加 content 列（存储 SKILL.md 正文）"""
+    try:
+        cursor = await conn.execute("PRAGMA table_info(skill_registry)")
+        columns = await cursor.fetchall()
+        column_names = [col[1] for col in columns]
+        if "content" not in column_names:
+            await conn.execute(
+                "ALTER TABLE skill_registry ADD COLUMN content TEXT DEFAULT ''"
+            )
+    except Exception:
+        pass
+
 
 # V1 所有建表语句，按依赖顺序排列
 _V1_TABLES = [
@@ -363,6 +447,8 @@ _MIGRATIONS: dict[int, callable] = {
     1: _apply_v1,
     2: _apply_v2,
     3: _apply_v3,
+    4: _apply_v4,
+    5: _apply_v5,
 }
 
 

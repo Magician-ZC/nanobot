@@ -92,6 +92,10 @@ class PipelineTool(Tool):
                                 "items": {"type": "string"},
                                 "description": "依赖的前置阶段名称",
                             },
+                            "persona": {
+                                "type": "string",
+                                "description": "人格名称（对应 workspace/personas/{name}/PERSONA.md），不指定则使用 role 默认人格",
+                            },
                         },
                         "required": ["name", "role", "prompt"],
                     },
@@ -185,6 +189,7 @@ class PipelineTool(Tool):
                 prompt_template=stage_dict["prompt"],
                 tools=stage_dict.get("tools", []),
                 depends_on=stage_dict.get("depends_on", []),
+                persona=stage_dict.get("persona"),
             )
             stages.append(stage)
         

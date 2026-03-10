@@ -2,10 +2,9 @@
   <div>
     <div class="page-header">
       <h2>仪表盘</h2>
-      <span class="auto-refresh-hint">每 15 秒自动刷新</span>
+      <span style="font-size:12px;color:var(--text-muted)">每 15 秒自动刷新</span>
     </div>
 
-    <!-- 统计概览 -->
     <div class="stats-row">
       <div class="stat-card card">
         <div class="stat-value">{{ nodesList.length }}</div>
@@ -25,10 +24,9 @@
       </div>
     </div>
 
-    <!-- 节点列表 -->
     <div class="card">
-      <h3 style="margin-bottom:12px">Agent 节点</h3>
-      <p v-if="loading" style="color:#909399">加载中...</p>
+      <h3 style="margin-bottom:14px">Agent 节点</h3>
+      <p v-if="loading" style="color:var(--text-muted)">加载中...</p>
       <table v-else-if="nodesList.length">
         <thead>
           <tr>
@@ -42,7 +40,7 @@
         </thead>
         <tbody>
           <tr v-for="node in nodesList" :key="node.id">
-            <td>{{ node.hostname }}</td>
+            <td style="font-weight:500">{{ node.hostname }}</td>
             <td>
               <span :class="['badge', node.status === 'online' ? 'badge-online' : 'badge-offline']">
                 {{ node.status === 'online' ? '在线' : '离线' }}
@@ -57,13 +55,15 @@
           </tr>
         </tbody>
       </table>
-      <p v-else style="color:#909399">暂无节点</p>
+      <div v-else class="empty-state">
+        <div class="empty-state-icon">📡</div>
+        <div class="empty-state-text">暂无节点，请先部署 Agent Node</div>
+      </div>
     </div>
 
-    <!-- 用户列表（仅 admin） -->
-    <div class="card" v-if="isAdmin">
-      <h3 style="margin-bottom:12px">用户列表</h3>
-      <table v-if="usersList.length">
+    <div class="card" v-if="isAdmin && usersList.length">
+      <h3 style="margin-bottom:14px">用户列表</h3>
+      <table>
         <thead>
           <tr>
             <th>用户名</th>
@@ -74,7 +74,7 @@
         </thead>
         <tbody>
           <tr v-for="user in usersList" :key="user.id">
-            <td>{{ user.username }}</td>
+            <td style="font-weight:500">{{ user.username }}</td>
             <td>
               <span :class="['badge', user.role === 'admin' ? 'badge-admin' : 'badge-operator']">
                 {{ user.role }}
@@ -101,73 +101,26 @@ export default {
       const u = getCurrentUser()
       return u && u.role === 'admin'
     },
-    onlineCount() {
-      return this.nodesList.filter((n) => n.status === 'online').length
-    },
-    offlineCount() {
-      return this.nodesList.filter((n) => n.status !== 'online').length
-    },
+    onlineCount() { return this.nodesList.filter(n => n.status === 'online').length },
+    offlineCount() { return this.nodesList.filter(n => n.status !== 'online').length },
   },
   methods: {
     async fetchData() {
       try {
         this.nodesList = await nodes.list()
-        if (this.isAdmin) {
-          this.usersList = await users.list()
-        }
-      } catch {
-        // 静默处理，保持上次数据
-      } finally {
-        this.loading = false
-      }
+        if (this.isAdmin) this.usersList = await users.list()
+      } catch { /* keep last */ }
+      finally { this.loading = false }
     },
     formatTime(t) {
       if (!t) return '-'
-      try {
-        return new Date(t).toLocaleString('zh-CN')
-      } catch {
-        return t
-      }
+      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
     },
   },
   mounted() {
     this.fetchData()
     this.timer = setInterval(this.fetchData, 15000)
   },
-  unmounted() {
-    clearInterval(this.timer)
-  },
+  unmounted() { clearInterval(this.timer) },
 }
 </script>
-
-<style scoped>
-.auto-refresh-hint {
-  font-size: 12px;
-  color: #909399;
-}
-.stats-row {
-  display: flex;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-.stat-card {
-  flex: 1;
-  text-align: center;
-  padding: 16px;
-}
-.stat-value {
-  font-size: 28px;
-  font-weight: 700;
-}
-.stat-value.online {
-  color: #67c23a;
-}
-.stat-value.offline {
-  color: #f56c6c;
-}
-.stat-label {
-  font-size: 13px;
-  color: #909399;
-  margin-top: 4px;
-}
-</style>

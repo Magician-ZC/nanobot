@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from loguru import logger
 
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.dispatcher import DispatchDecision, dispatch_task
 from nanobot.agent.memory import MemoryStore
+from nanobot.agent.persona import PersonaManager
 from nanobot.agent.subagent import SubagentManager
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
@@ -129,6 +131,7 @@ class AgentLoop:
         self._managed_client = None
         self._policy_enforcer = None
         self._heartbeat_service = None
+        self._persona_manager = PersonaManager(workspace)
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -490,13 +493,46 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
+        # ── 任务调度：根据消息内容选择 persona 或 pipeline ──
+        decision = await self._dispatch_to_persona(msg.content)
+
+        if decision.mode == "pipeline" and decision.pipeline_stages:
+            # pipeline 模式：构建 stages 并执行
+            async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
+                meta = dict(msg.metadata or {})
+                meta["_progress"] = True
+                meta["_tool_hint"] = tool_hint
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
+                ))
+
+            await _bus_progress(f"🔄 任务调度: {decision.reason}")
+            final_content = await self._execute_dispatched_pipeline(
+                msg, decision, on_progress=on_progress or _bus_progress,
+            )
+            # pipeline 结果不走 session 存储（pipeline 内部各 stage 有自己的记忆整理）
+            if final_content is None:
+                final_content = "Pipeline 执行完成但无输出。"
+            return OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content=final_content,
+                metadata=msg.metadata or {},
+            )
+
+        # single 或 direct 模式
         history = session.get_history(max_messages=self.memory_window)
-        initial_messages = self.context.build_messages(
-            history=history,
-            current_message=msg.content,
-            media=msg.media if msg.media else None,
-            channel=msg.channel, chat_id=msg.chat_id,
-        )
+
+        if decision.mode == "single" and decision.persona_name:
+            # 注入 persona context 到 system prompt
+            initial_messages = self._build_messages_with_persona(
+                decision.persona_name, history, msg,
+            )
+        else:
+            initial_messages = self.context.build_messages(
+                history=history,
+                current_message=msg.content,
+                media=msg.media if msg.media else None,
+                channel=msg.channel, chat_id=msg.chat_id,
+            )
 
         async def _bus_progress(content: str, *, tool_hint: bool = False) -> None:
             meta = dict(msg.metadata or {})
@@ -516,6 +552,18 @@ class AgentLoop:
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
 
+        # single 模式下异步整理 persona 经验
+        if decision.mode == "single" and decision.persona_name:
+            persona = self._persona_manager.get(decision.persona_name)
+            asyncio.create_task(
+                persona.consolidate_experience(
+                    messages=all_msgs[1 + len(history):],
+                    provider=self.provider,
+                    model=self.model,
+                    task_summary=f"[Dispatched] persona={decision.persona_name} | {msg.content[:200]}",
+                )
+            )
+
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
 
@@ -525,6 +573,111 @@ class AgentLoop:
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
             metadata=msg.metadata or {},
         )
+
+    # ── 任务调度辅助方法 ──────────────────────────────────────────
+
+    def _get_available_personas(self) -> list[dict[str, str]]:
+        """获取 node 上所有可用 persona 的 name + description 摘要。"""
+        result = []
+        for name in self._persona_manager.list_personas():
+            persona = self._persona_manager.get(name)
+            content = persona.read_persona()
+            # 从 persona content 提取前几行作为 description
+            desc = ""
+            for line in content.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    desc = line[:200]
+                    break
+            if not desc:
+                desc = name
+            result.append({"name": name, "description": desc})
+        return result
+
+    async def _dispatch_to_persona(self, message: str) -> DispatchDecision:
+        """调用 dispatcher 决定使用哪个 persona。"""
+        personas = self._get_available_personas()
+        if not personas:
+            return DispatchDecision(mode="direct", reason="no personas available")
+        return await dispatch_task(message, personas, self.provider, self.model)
+
+    def _build_messages_with_persona(
+        self,
+        persona_name: str,
+        history: list[dict],
+        msg: InboundMessage,
+    ) -> list[dict]:
+        """构建注入了 persona context 的消息列表。"""
+        persona = self._persona_manager.get(persona_name)
+        persona_context = persona.get_full_context()
+
+        # 在原始 system prompt 基础上追加 persona context
+        base_system = self.context.build_system_prompt()
+        if persona_context:
+            system_prompt = f"{base_system}\n\n---\n\n{persona_context}"
+        else:
+            system_prompt = base_system
+
+        runtime_ctx = ContextBuilder._build_runtime_context(msg.channel, msg.chat_id)
+        user_content = msg.content
+        if msg.media:
+            user_content = self.context._build_user_content(msg.content, msg.media)
+
+        if isinstance(user_content, str):
+            merged = f"{runtime_ctx}\n\n{user_content}"
+        else:
+            merged = [{"type": "text", "text": runtime_ctx}] + user_content
+
+        return [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "user", "content": merged},
+        ]
+
+    async def _execute_dispatched_pipeline(
+        self,
+        msg: InboundMessage,
+        decision: DispatchDecision,
+        on_progress: Callable[..., Awaitable[None]] | None = None,
+    ) -> str:
+        """根据 dispatcher 的 pipeline 决策，构建并执行 pipeline。"""
+        from nanobot.agent.pipeline import AgentRole, PipelineStage
+
+        # 将 dispatcher 的 stages 转换为 PipelineStage 对象
+        stages: list[PipelineStage] = []
+        prev_name: str | None = None
+
+        for i, s in enumerate(decision.pipeline_stages):
+            persona_name = s.get("persona", "")
+            task_desc = s.get("task", "")
+
+            # 尝试匹配 AgentRole，匹配不到用 CODER 作为 fallback
+            try:
+                role = AgentRole(persona_name)
+            except ValueError:
+                role = AgentRole.CODER
+
+            stage_name = f"stage_{i}_{persona_name}"
+            stage = PipelineStage(
+                name=stage_name,
+                role=role,
+                prompt_template=task_desc,
+                depends_on=[prev_name] if prev_name else [],
+                persona=persona_name,
+            )
+            stages.append(stage)
+            prev_name = stage_name
+
+        if not stages:
+            return "Pipeline 无有效阶段。"
+
+        result = await self.pipeline.execute(
+            task=msg.content,
+            stages=stages,
+            origin_channel=msg.channel,
+            origin_chat_id=msg.chat_id,
+        )
+        return result
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""

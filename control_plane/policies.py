@@ -9,7 +9,7 @@ from control_plane.database import get_connection
 
 # ── Skill 注册表 CRUD ─────────────────────────────────────────────
 
-async def create_skill(name: str, description: str = "", source: str = "custom") -> dict:
+async def create_skill(name: str, description: str = "", source: str = "custom", content: str = "") -> dict:
     """注册新 Skill 到全局注册表"""
     conn = await get_connection()
     try:
@@ -24,9 +24,9 @@ async def create_skill(name: str, description: str = "", source: str = "custom")
         now = datetime.now(timezone.utc).isoformat()
 
         await conn.execute(
-            """INSERT INTO skill_registry (id, name, description, source, created_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (skill_id, name, description, source, now),
+            """INSERT INTO skill_registry (id, name, description, source, content, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (skill_id, name, description, source, content, now),
         )
         await conn.commit()
 
@@ -35,6 +35,7 @@ async def create_skill(name: str, description: str = "", source: str = "custom")
             "name": name,
             "description": description,
             "source": source,
+            "content": content,
             "version": 1,
             "checksum": "",
             "file_size": 0,
@@ -49,7 +50,7 @@ async def list_skills() -> list[dict]:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            "SELECT id, name, description, source, version, checksum, file_size, created_at "
+            "SELECT id, name, description, source, version, checksum, file_size, created_at, content "
             "FROM skill_registry ORDER BY created_at"
         )
         rows = await cursor.fetchall()
@@ -63,6 +64,7 @@ async def list_skills() -> list[dict]:
                 "checksum": row[5],
                 "file_size": row[6],
                 "created_at": row[7],
+                "content": row[8] or "",
             }
             for row in rows
         ]
@@ -75,7 +77,7 @@ async def get_skill_by_name(name: str) -> dict | None:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            "SELECT id, name, description, source, version, checksum, file_size, created_at "
+            "SELECT id, name, description, source, version, checksum, file_size, created_at, content "
             "FROM skill_registry WHERE name = ?",
             (name,),
         )
@@ -91,11 +93,12 @@ async def get_skill_by_name(name: str) -> dict | None:
             "checksum": row[5],
             "file_size": row[6],
             "created_at": row[7],
+            "content": row[8] or "",
         }
     finally:
         await conn.close()
 
-async def update_skill(skill_id: str, name: str | None = None, description: str | None = None, source: str | None = None) -> dict | None:
+async def update_skill(skill_id: str, name: str | None = None, description: str | None = None, source: str | None = None, content: str | None = None) -> dict | None:
     """更新 Skill 信息"""
     conn = await get_connection()
     try:
@@ -122,6 +125,9 @@ async def update_skill(skill_id: str, name: str | None = None, description: str 
         if source is not None:
             sets.append("source = ?")
             params.append(source)
+        if content is not None:
+            sets.append("content = ?")
+            params.append(content)
 
         if not sets:
             return await _get_skill_by_id(conn, skill_id)
@@ -156,7 +162,7 @@ async def delete_skill(skill_id: str) -> bool:
 async def _get_skill_by_id(conn, skill_id: str) -> dict | None:
     """根据 ID 查询 Skill（内部使用，复用连接）"""
     cursor = await conn.execute(
-        "SELECT id, name, description, source, version, checksum, file_size, created_at "
+        "SELECT id, name, description, source, version, checksum, file_size, created_at, content "
         "FROM skill_registry WHERE id = ?",
         (skill_id,),
     )
@@ -166,6 +172,7 @@ async def _get_skill_by_id(conn, skill_id: str) -> dict | None:
     return {
         "id": row[0], "name": row[1], "description": row[2], "source": row[3],
         "version": row[4], "checksum": row[5], "file_size": row[6], "created_at": row[7],
+        "content": row[8] or "",
     }
 
 
@@ -363,7 +370,7 @@ async def get_node_policy(node_id: str) -> dict | None:
     conn = await get_connection()
     try:
         cursor = await conn.execute(
-            "SELECT id, node_id, allowed_skills, allowed_mcp_servers, version, updated_at "
+            "SELECT id, node_id, allowed_skills, allowed_mcp_servers, version, updated_at, allowed_personas "
             "FROM resource_policies WHERE node_id = ?",
             (node_id,),
         )
@@ -379,8 +386,9 @@ async def get_node_policy(node_id: str) -> dict | None:
             policy_id = str(uuid.uuid4())
             now = datetime.now(timezone.utc).isoformat()
             await conn.execute(
-                """INSERT INTO resource_policies (id, node_id, allowed_skills, allowed_mcp_servers, version, updated_at)
-                   VALUES (?, ?, '[]', '[]', 1, ?)""",
+                """INSERT INTO resource_policies
+                   (id, node_id, allowed_skills, allowed_mcp_servers, allowed_personas, version, updated_at)
+                   VALUES (?, ?, '[]', '[]', '[]', 1, ?)""",
                 (policy_id, node_id, now),
             )
             await conn.execute(
@@ -393,9 +401,11 @@ async def get_node_policy(node_id: str) -> dict | None:
                 "node_id": node_id,
                 "allowed_skills": [],
                 "allowed_mcp_servers": [],
+                "allowed_personas": [],
                 "version": 1,
                 "updated_at": now,
                 "skill_versions": {},
+                "persona_versions": {},
             }
 
         policy = _row_to_policy(row)
@@ -415,6 +425,21 @@ async def get_node_policy(node_id: str) -> dict | None:
         else:
             policy["skill_versions"] = {}
 
+        # 查询策略中 Persona 的版本信息
+        allowed_personas = policy.get("allowed_personas", [])
+        if allowed_personas:
+            placeholders = ",".join("?" for _ in allowed_personas)
+            cursor = await conn.execute(
+                f"SELECT name, version FROM persona_registry WHERE name IN ({placeholders})",
+                allowed_personas,
+            )
+            persona_rows = await cursor.fetchall()
+            policy["persona_versions"] = {
+                r[0]: {"version": r[1]} for r in persona_rows
+            }
+        else:
+            policy["persona_versions"] = {}
+
         return policy
     finally:
         await conn.close()
@@ -424,6 +449,7 @@ async def update_node_policy(
     node_id: str,
     allowed_skills: list[str],
     allowed_mcp_servers: list[str],
+    allowed_personas: list[str] | None = None,
 ) -> dict:
     """更新节点资源策略，版本号自动递增
 
@@ -433,6 +459,7 @@ async def update_node_policy(
     now = datetime.now(timezone.utc).isoformat()
     skills_json = json.dumps(allowed_skills, ensure_ascii=False)
     servers_json = json.dumps(allowed_mcp_servers, ensure_ascii=False)
+    personas_json = json.dumps(allowed_personas or [], ensure_ascii=False)
 
     conn = await get_connection()
     try:
@@ -452,18 +479,20 @@ async def update_node_policy(
             new_version = existing[1] + 1
             await conn.execute(
                 """UPDATE resource_policies
-                   SET allowed_skills = ?, allowed_mcp_servers = ?, version = ?, updated_at = ?
+                   SET allowed_skills = ?, allowed_mcp_servers = ?, allowed_personas = ?,
+                       version = ?, updated_at = ?
                    WHERE node_id = ?""",
-                (skills_json, servers_json, new_version, now, node_id),
+                (skills_json, servers_json, personas_json, new_version, now, node_id),
             )
             policy_id = existing[0]
         else:
             policy_id = str(uuid.uuid4())
             new_version = 1
             await conn.execute(
-                """INSERT INTO resource_policies (id, node_id, allowed_skills, allowed_mcp_servers, version, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (policy_id, node_id, skills_json, servers_json, new_version, now),
+                """INSERT INTO resource_policies
+                   (id, node_id, allowed_skills, allowed_mcp_servers, allowed_personas, version, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (policy_id, node_id, skills_json, servers_json, personas_json, new_version, now),
             )
 
         # 同步更新 nodes 表的 policy_version
@@ -478,6 +507,7 @@ async def update_node_policy(
             "node_id": node_id,
             "allowed_skills": allowed_skills,
             "allowed_mcp_servers": allowed_mcp_servers,
+            "allowed_personas": allowed_personas or [],
             "version": new_version,
             "updated_at": now,
         }
@@ -503,6 +533,15 @@ def _row_to_policy(row) -> dict:
         except (json.JSONDecodeError, TypeError):
             allowed_mcp_servers = []
 
+    # allowed_personas 可能不存在（V3 之前的数据库）
+    allowed_personas = []
+    try:
+        raw = row[6] if len(row) > 6 else "[]"
+        if isinstance(raw, str):
+            allowed_personas = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, IndexError):
+        allowed_personas = []
+
     return {
         "id": row[0],
         "node_id": row[1],
@@ -510,4 +549,5 @@ def _row_to_policy(row) -> dict:
         "allowed_mcp_servers": allowed_mcp_servers,
         "version": row[4],
         "updated_at": row[5],
+        "allowed_personas": allowed_personas,
     }

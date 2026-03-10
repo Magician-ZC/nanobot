@@ -25,9 +25,12 @@ class ResourcePolicy:
     """资源策略"""
     allowed_skills: list[str] = field(default_factory=list)
     allowed_mcp_servers: list[str] = field(default_factory=list)
+    allowed_personas: list[str] = field(default_factory=list)
     version: int = 0
     skill_versions: dict[str, dict] = field(default_factory=dict)
+    persona_versions: dict[str, dict] = field(default_factory=dict)
     # skill_versions 格式: {"skill_name": {"version": 1, "checksum": "sha256:..."}, ...}
+    # persona_versions 格式: {"persona_name": {"version": 1}, ...}
 
 
 @dataclass
@@ -280,15 +283,17 @@ class ManagedClient:
         """拉取最新的资源策略
 
         Returns:
-            ResourcePolicy 包含允许的 Skill 和 MCP Server 列表及 Skill 版本信息
+            ResourcePolicy 包含允许的 Skill、MCP Server 和 Persona 列表
         """
         result = await self._request("GET", f"/api/nodes/{self.node_id}/policy")
         data = result  # type: ignore[assignment]
         return ResourcePolicy(
             allowed_skills=data.get("allowed_skills", []),
             allowed_mcp_servers=data.get("allowed_mcp_servers", []),
+            allowed_personas=data.get("allowed_personas", []),
             version=data.get("version", 0),
             skill_versions=data.get("skill_versions", {}),
+            persona_versions=data.get("persona_versions", {}),
         )
 
     # ── 配置拉取 ──────────────────────────────────────────────────
@@ -404,24 +409,6 @@ class ManagedClient:
         )
         data = result  # type: ignore[assignment]
         return data.get("stored", 0)
-    async def upload_audit_logs(self, logs: list[dict]) -> int:
-        """批量上报审计日志到 Control Plane
-
-        Args:
-            logs: 审计日志条目列表
-
-        Returns:
-            成功存储的条数
-        """
-        if not logs:
-            return 0
-        result = await self._request(
-            "POST",
-            f"/api/nodes/{self.node_id}/audit",
-            json={"logs": logs},
-        )
-        data = result  # type: ignore[assignment]
-        return data.get("stored", 0)
 
     async def upload_token_usage(self, records: list[dict]) -> int:
         """批量上报 Token 用量到 Control Plane
@@ -512,6 +499,36 @@ class ManagedClient:
         """关闭 HTTP 客户端"""
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+    # ── Persona API ──────────────────────────────────────────────
+
+    async def fetch_personas(self) -> list[dict]:
+        """拉取分配给本节点的所有 Persona（人格定义 + 全局记忆）
+
+        Returns:
+            [{"name", "persona_content", "version", "global_memory", "global_memory_version"}, ...]
+        """
+        result = await self._request("GET", f"/api/nodes/{self.node_id}/personas")
+        data = result  # type: ignore[assignment]
+        return data.get("personas", [])
+
+    async def upload_persona_memory(
+        self,
+        memories: list[dict],
+    ) -> dict:
+        """批量上报 Persona 记忆
+
+        Args:
+            memories: [{"persona_name": str, "memory_content": str, "history_entries": str}, ...]
+
+        Returns:
+            上报结果
+        """
+        return await self._request(
+            "POST",
+            f"/api/nodes/{self.node_id}/persona-memory",
+            json={"memories": memories},
+        )
 
     async def __aenter__(self) -> "ManagedClient":
         return self
