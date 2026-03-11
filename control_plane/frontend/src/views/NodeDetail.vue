@@ -91,6 +91,18 @@
       <!-- 配置编辑器 -->
       <div class="card" v-if="isAdmin">
         <h3 style="margin-bottom:14px">节点配置 (JSON)</h3>
+        <details style="margin-bottom:10px;font-size:12px;color:var(--text-muted)">
+          <summary style="cursor:pointer;user-select:none">可用配置字段参考</summary>
+          <div style="margin-top:8px;padding:8px 12px;background:var(--bg-secondary);border-radius:6px;line-height:1.8">
+            <code>channels.telegram.group_policy</code>: <b>"mention"</b> | "open" — 群组响应策略<br/>
+            <code>channels.discord.group_policy</code>: <b>"mention"</b> | "open" — 群组响应策略<br/>
+            <code>channels.feishu.react_emoji</code>: <b>"THUMBSUP"</b> — 消息反应表情<br/>
+            <code>agents.defaults.model</code>: 模型名称<br/>
+            <code>agents.defaults.temperature</code>: <b>0.1</b> — 温度参数<br/>
+            <code>agents.defaults.provider</code>: <b>"auto"</b> — 指定 provider 或自动检测<br/>
+            <code>tools.mcp_servers.{name}.type</code>: "stdio" | "sse" | "streamableHttp"<br/>
+          </div>
+        </details>
         <textarea v-model="configText" rows="10" spellcheck="false"></textarea>
         <p v-if="configError" class="error-msg">{{ configError }}</p>
         <button class="btn btn-primary" style="margin-top:12px" @click="saveConfig" :disabled="savingConfig">{{ savingConfig ? '保存中...' : '保存配置' }}</button>

@@ -17,8 +17,11 @@
           <label>连接类型</label>
           <select v-model="form.connection_type" @change="onTypeChange">
             <option value="stdio">stdio</option>
-            <option value="http">http</option>
+            <option value="sse">sse</option>
+            <option value="streamableHttp">streamableHttp</option>
+            <option value="http">http (legacy)</option>
           </select>
+          <small style="color:var(--text-muted);display:block;margin-top:4px">stdio: 本地进程 | sse: Server-Sent Events | streamableHttp: HTTP 流式传输</small>
         </div>
         <template v-if="form.connection_type === 'stdio'">
           <div class="form-group">
@@ -34,7 +37,7 @@
             <input v-model="stdioForm.env" placeholder='{"KEY":"value"}' />
           </div>
         </template>
-        <template v-if="form.connection_type === 'http'">
+        <template v-if="form.connection_type === 'sse' || form.connection_type === 'streamableHttp' || form.connection_type === 'http'">
           <div class="form-group">
             <label>URL</label>
             <input v-model="httpForm.url" placeholder="https://your-mcp-endpoint.com/mcp" />
@@ -42,6 +45,10 @@
           <div class="form-group">
             <label>Headers (JSON)</label>
             <input v-model="httpForm.headers" placeholder='{"Authorization":"Bearer xxx"}' />
+          </div>
+          <div class="form-group">
+            <label>Tool Timeout (秒)</label>
+            <input v-model.number="httpForm.tool_timeout" type="number" min="1" placeholder="30" />
           </div>
         </template>
         <div class="form-group">
@@ -94,7 +101,7 @@ export default {
       servers: [], loading: true, showForm: false, editingServer: null,
       form: { name: '', connection_type: 'stdio', description: '' },
       stdioForm: { command: '', args: '', env: '' },
-      httpForm: { url: '', headers: '' },
+      httpForm: { url: '', headers: '', tool_timeout: 30 },
       formError: '', submitting: false, testing: false, testResult: null,
     }
   },
@@ -106,7 +113,7 @@ export default {
     },
     resetSubForms() {
       this.stdioForm = { command: '', args: '', env: '' }
-      this.httpForm = { url: '', headers: '' }
+      this.httpForm = { url: '', headers: '', tool_timeout: 30 }
     },
     onTypeChange() { this.resetSubForms() },
     openAdd() {
@@ -126,6 +133,7 @@ export default {
       } else {
         this.httpForm.url = c.url || ''
         this.httpForm.headers = c.headers ? JSON.stringify(c.headers) : ''
+        this.httpForm.tool_timeout = c.tool_timeout || 30
       }
       this.formError = ''; this.testResult = null; this.showForm = true
     },
@@ -143,9 +151,12 @@ export default {
         }
         return cfg
       } else {
-        const cfg = { url: this.httpForm.url }
+        const cfg = { url: this.httpForm.url, type: this.form.connection_type }
         if (this.httpForm.headers) {
           try { cfg.headers = JSON.parse(this.httpForm.headers) } catch { throw new Error('Headers JSON 无效') }
+        }
+        if (this.httpForm.tool_timeout && this.httpForm.tool_timeout !== 30) {
+          cfg.tool_timeout = this.httpForm.tool_timeout
         }
         return cfg
       }
@@ -156,7 +167,7 @@ export default {
       let config
       try { config = this.buildConfig() } catch (e) { this.formError = e.message; return }
       if (this.form.connection_type === 'stdio' && !config.command) { this.formError = '请填写命令'; return }
-      if (this.form.connection_type === 'http' && !config.url) { this.formError = '请填写 URL'; return }
+      if (this.form.connection_type !== 'stdio' && !config.url) { this.formError = '请填写 URL'; return }
       this.submitting = true
       try {
         const data = { name: this.form.name, connection_type: this.form.connection_type, config, description: this.form.description }

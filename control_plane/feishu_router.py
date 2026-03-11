@@ -22,6 +22,66 @@ from control_plane.nodes import get_node_by_id
 # 绑定码格式：6 位大写字母+数字
 _BIND_CODE_PATTERN = re.compile(r"^[A-Z0-9]{6}$")
 
+# ── 智能消息格式检测（复用 nanobot/channels/feishu.py 的逻辑）──────
+_COMPLEX_MD_RE = re.compile(
+    r"```"
+    r"|^\|.+\|.*\n\s*\|[-:\s|]+\|"
+    r"|^#{1,6}\s+",
+    re.MULTILINE,
+)
+_SIMPLE_MD_RE = re.compile(
+    r"\*\*.+?\*\*"
+    r"|__.+?__"
+    r"|(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)"
+    r"|~~.+?~~",
+    re.DOTALL,
+)
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\)]+)\)")
+_LIST_RE = re.compile(r"^[\s]*[-*+]\s+", re.MULTILINE)
+_OLIST_RE = re.compile(r"^[\s]*\d+\.\s+", re.MULTILINE)
+_TEXT_MAX_LEN = 200
+_POST_MAX_LEN = 2000
+
+
+def _detect_msg_format(content: str) -> str:
+    """根据内容自动选择最优飞书消息格式: text / post / interactive"""
+    stripped = content.strip()
+    if _COMPLEX_MD_RE.search(stripped):
+        return "interactive"
+    if len(stripped) > _POST_MAX_LEN:
+        return "interactive"
+    if _SIMPLE_MD_RE.search(stripped):
+        return "interactive"
+    if _LIST_RE.search(stripped) or _OLIST_RE.search(stripped):
+        return "interactive"
+    if _MD_LINK_RE.search(stripped):
+        return "post"
+    if len(stripped) <= _TEXT_MAX_LEN:
+        return "text"
+    return "post"
+
+
+def _markdown_to_post(content: str) -> str:
+    """将 markdown 内容转换为飞书 post（富文本）消息 JSON，处理链接为 <a> 标签"""
+    lines = content.strip().split("\n")
+    paragraphs: list[list[dict]] = []
+    for line in lines:
+        elements: list[dict] = []
+        last_end = 0
+        for m in _MD_LINK_RE.finditer(line):
+            before = line[last_end:m.start()]
+            if before:
+                elements.append({"tag": "text", "text": before})
+            elements.append({"tag": "a", "text": m.group(1), "href": m.group(2)})
+            last_end = m.end()
+        remaining = line[last_end:]
+        if remaining:
+            elements.append({"tag": "text", "text": remaining})
+        if not elements:
+            elements.append({"tag": "text", "text": ""})
+        paragraphs.append(elements)
+    return json.dumps({"zh_cn": {"content": paragraphs}}, ensure_ascii=False)
+
 
 class MessageRouter:
     """消息路由 - 根据绑定关系分发消息到 Agent Node
@@ -55,7 +115,7 @@ class MessageRouter:
         # 重新上线时清理离线诊断信息
         self._node_disconnect_reasons.pop(node_id, None)
         self._node_disconnected_at.pop(node_id, None)
-        logger.info(f"节点 {node_id} 已注册 WebSocket 连接")
+        logger.info("节点 {} 已注册 WebSocket 连接", node_id)
 
     def unregister_node_connection(self, node_id: str, reason: str | None = None) -> None:
         """注销节点 WebSocket 连接"""
@@ -63,9 +123,9 @@ class MessageRouter:
         if reason:
             self._node_disconnect_reasons[node_id] = reason
             self._node_disconnected_at[node_id] = datetime.now(timezone.utc)
-            logger.info(f"节点 {node_id} 已注销 WebSocket 连接，原因: {reason}")
+            logger.info("节点 {} 已注销 WebSocket 连接，原因: {}", node_id, reason)
         else:
-            logger.info(f"节点 {node_id} 已注销 WebSocket 连接")
+            logger.info("节点 {} 已注销 WebSocket 连接", node_id)
 
     def is_node_connected(self, node_id: str) -> bool:
         """检查节点是否在线（有活跃 WebSocket 连接）"""
@@ -119,14 +179,14 @@ class MessageRouter:
         # 自动补全用户名（无需重新绑定）
         if not binding["feishu_name"] and message.feishu_name:
             await update_binding_name(feishu_open_id, message.feishu_name)
-            logger.info(f"自动更新飞书用户名: {feishu_open_id} -> {message.feishu_name}")
+            logger.info("自动更新飞书用户名: {} -> {}", feishu_open_id, message.feishu_name)
 
         # 添加 reaction 表示已收到消息（点赞）
         if self._gateway and message.message_id:
             try:
                 await self._gateway.add_reaction(message.message_id)
             except Exception as e:
-                logger.debug(f"添加 reaction 失败: {e}")
+                logger.debug("添加 reaction 失败: {}", e)
 
         # 存储入站消息 (Requirement 5.1)
         await save_message(
@@ -168,7 +228,7 @@ class MessageRouter:
                 f"消息已转发: {feishu_open_id} -> 节点 {node_id}"
             )
         except Exception as e:
-            logger.error(f"转发消息到节点 {node_id} 失败: {e}")
+            logger.error("转发消息到节点 {} 失败: {}", node_id, e)
             # 连接可能已断开，清理
             self.unregister_node_connection(node_id, reason=f"forward send failed: {e}")
             await self._reply_feishu(
@@ -196,10 +256,10 @@ class MessageRouter:
             status="pending",
         )
 
-        # 通过飞书 API 发送
-        success = await self._send_feishu_card(chat_id, message.content)
+        # 通过飞书 API 发送（智能格式检测）
+        success = await self._send_feishu_smart(chat_id, message.content)
         if not success:
-            logger.error(f"飞书消息发送失败: -> {feishu_open_id}")
+            logger.error("飞书消息发送失败: -> {}", feishu_open_id)
 
     # ── 自助绑定流程 (Requirements: 7.1, 7.3, 7.4, 7.5) ────────
 
@@ -243,7 +303,7 @@ class MessageRouter:
                 return
 
         # 非绑定码，回复绑定引导 (Requirement 7.1)
-        logger.info(f"飞书用户 {feishu_open_id} 未绑定任何节点")
+        logger.info("飞书用户 {} 未绑定任何节点", feishu_open_id)
         await self._reply_feishu(
             feishu_open_id,
             "您尚未绑定任何 Agent 节点。请联系管理员获取绑定码，"
@@ -260,11 +320,23 @@ class MessageRouter:
         content = json.dumps({"text": text}, ensure_ascii=False)
         await self._gateway.send_message(open_id, content, msg_type="text")
 
-    async def _send_feishu_card(self, chat_id: str, content: str) -> bool:
-        """通过飞书发送卡片消息（与 FeishuChannel.send 类似）"""
+    async def _send_feishu_smart(self, chat_id: str, content: str) -> bool:
+        """根据内容自动选择最优格式发送飞书消息（text/post/interactive）"""
         if not self._gateway:
             logger.warning("网关服务未设置，无法发送飞书消息")
             return False
+
+        fmt = _detect_msg_format(content)
+
+        if fmt == "text":
+            body = json.dumps({"text": content.strip()}, ensure_ascii=False)
+            return await self._gateway.send_message(chat_id, body, msg_type="text")
+
+        if fmt == "post":
+            body = _markdown_to_post(content)
+            return await self._gateway.send_message(chat_id, body, msg_type="post")
+
+        # interactive card
         card = {
             "config": {"wide_screen_mode": True},
             "elements": [{"tag": "markdown", "content": content}],

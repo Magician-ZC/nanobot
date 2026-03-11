@@ -143,6 +143,7 @@ const PROVIDERS = [
   'openai', 'anthropic', 'deepseek', 'openrouter', 'groq',
   'zhipu', 'dashscope', 'gemini', 'moonshot', 'minimax',
   'aihubmix', 'siliconflow', 'volcengine', 'vllm', 'custom',
+  'azure_openai',
 ]
 
 export default {

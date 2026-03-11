@@ -32,6 +32,12 @@ except ImportError:
     FEISHU_AVAILABLE = False
     lark = None
 
+
+def _register_optional_event(builder: Any, method_name: str, handler: Any) -> Any:
+    """注册事件处理器，SDK 不支持时静默跳过"""
+    method = getattr(builder, method_name, None)
+    return method(handler) if callable(method) else builder
+
 # 消息类型显示映射（复用 feishu.py 的模式）
 MSG_TYPE_MAP = {
     "image": "[image]",
@@ -160,7 +166,7 @@ def parse_feishu_message(data: "P2ImMessageReceiveV1") -> GatewayMessage | None:
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as e:
-        logger.error(f"解析飞书消息失败: {e}")
+        logger.error("解析飞书消息失败: {}", e)
         return None
 
 
@@ -356,15 +362,27 @@ class FeishuGatewayService:
             .log_level(lark.LogLevel.INFO) \
             .build()
 
-        # 创建事件处理器
-        # 注意: 飞书会发送多种事件(如消息已读),但SDK只需注册需要处理的事件
-        # 未注册的事件会被SDK忽略并记录日志,这是正常行为
-        event_handler = lark.EventDispatcherHandler.builder(
+        # 创建事件处理器（注册消息接收 + 可选的 reaction/已读/p2p 进入事件）
+        builder = lark.EventDispatcherHandler.builder(
             encrypt_key or "",
             verification_token or "",
         ).register_p2_im_message_receive_v1(
             self._on_message_sync
-        ).build()
+        )
+        builder = _register_optional_event(
+            builder, "register_p2_im_message_reaction_created_v1",
+            self._on_reaction_created,
+        )
+        builder = _register_optional_event(
+            builder, "register_p2_im_message_message_read_v1",
+            self._on_message_read,
+        )
+        builder = _register_optional_event(
+            builder,
+            "register_p2_im_chat_access_event_bot_p2p_chat_entered_v1",
+            self._on_bot_p2p_chat_entered,
+        )
+        event_handler = builder.build()
 
         # 创建 WebSocket 客户端
         self._ws_client = lark.ws.Client(
@@ -374,23 +392,30 @@ class FeishuGatewayService:
             log_level=lark.LogLevel.INFO,
         )
 
-        # 在独立线程中运行 WebSocket，带指数退避重连
-        # Requirements: 1.2, 1.3
+        # 在独立线程中运行 WebSocket，使用专用事件循环避免
+        # lark_oapi 的 module-level loop 与主 asyncio loop 冲突
         def run_ws():
+            import time
+            import lark_oapi.ws.client as _lark_ws_client
+            ws_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(ws_loop)
+            _lark_ws_client.loop = ws_loop
             retry_delay = 5
             max_delay = 300
-            while self._running:
-                try:
-                    self._connected_since = datetime.now(timezone.utc)
-                    self._ws_client.start()
-                except Exception as e:
-                    logger.warning(f"飞书 WebSocket 错误: {e}")
-                    self._connected_since = None
-                if self._running:
-                    import time
-                    logger.info(f"飞书 WebSocket 将在 {retry_delay}s 后重连")
-                    time.sleep(retry_delay)
-                    retry_delay = min(retry_delay * 2, max_delay)
+            try:
+                while self._running:
+                    try:
+                        self._connected_since = datetime.now(timezone.utc)
+                        self._ws_client.start()
+                    except Exception as e:
+                        logger.warning("飞书 WebSocket 错误: {}", e)
+                        self._connected_since = None
+                    if self._running:
+                        logger.info("飞书 WebSocket 将在 {}s 后重连", retry_delay)
+                        time.sleep(retry_delay)
+                        retry_delay = min(retry_delay * 2, max_delay)
+            finally:
+                ws_loop.close()
 
         self._ws_thread = threading.Thread(target=run_ws, daemon=True)
         self._ws_thread.start()
@@ -406,7 +431,7 @@ class FeishuGatewayService:
             try:
                 self._ws_client.stop()
             except Exception as e:
-                logger.warning(f"停止 WebSocket 客户端出错: {e}")
+                logger.warning("停止 WebSocket 客户端出错: {}", e)
         self._ws_client = None
         self._client = None
         self._ws_thread = None
@@ -430,7 +455,7 @@ class FeishuGatewayService:
             if response.success() and response.data and response.data.user:
                 return response.data.user.name or ""
         except Exception as e:
-            logger.debug(f"获取飞书用户名失败: {e}")
+            logger.debug("获取飞书用户名失败: {}", e)
         return ""
 
     async def add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> bool:
@@ -455,11 +480,11 @@ class FeishuGatewayService:
                 None, self._client.im.v1.message_reaction.create, request
             )
             if not response.success():
-                logger.debug(f"添加 reaction 失败: code={response.code}, msg={response.msg}")
+                logger.debug("添加 reaction 失败: code={}, msg={}", response.code, response.msg)
                 return False
             return True
         except Exception as e:
-            logger.debug(f"添加 reaction 出错: {e}")
+            logger.debug("添加 reaction 出错: {}", e)
             return False
 
     async def send_message(self, open_id: str, content: str,
@@ -500,10 +525,10 @@ class FeishuGatewayService:
                 )
                 return False
 
-            logger.debug(f"飞书消息已发送至 {open_id}")
+            logger.debug("飞书消息已发送至 {}", open_id)
             return True
         except Exception as e:
-            logger.error(f"发送飞书消息出错: {e}")
+            logger.error("发送飞书消息出错: {}", e)
             return False
 
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
@@ -542,4 +567,40 @@ class FeishuGatewayService:
             else:
                 logger.warning("飞书网关收到消息但未设置回调")
         except Exception as e:
-            logger.error(f"处理飞书网关消息出错: {e}")
+            logger.error("处理飞书网关消息出错: {}", e)
+
+    def _on_reaction_created(self, data: Any) -> None:
+        """处理消息 reaction 事件（用户对消息点了表情）"""
+        try:
+            event = data.event
+            logger.debug(
+                "飞书 reaction 事件: msg_id={}, type={}",
+                getattr(event, "message_id", "?"),
+                getattr(getattr(event, "reaction_type", None), "emoji_type", "?"),
+            )
+        except Exception:
+            pass
+
+    def _on_message_read(self, data: Any) -> None:
+        """处理消息已读事件"""
+        try:
+            event = data.event
+            reader_id = getattr(getattr(event, "reader", None), "reader_id", None)
+            if reader_id:
+                open_id = getattr(reader_id, "open_id", "?")
+                logger.debug("飞书消息已读: reader={}", open_id)
+        except Exception:
+            pass
+
+    def _on_bot_p2p_chat_entered(self, data: Any) -> None:
+        """处理用户打开机器人私聊事件，可用于发送欢迎消息"""
+        try:
+            event = data.event
+            open_id = ""
+            if hasattr(event, "chat_id"):
+                open_id = event.chat_id
+            elif hasattr(event, "operator") and hasattr(event.operator, "operator_id"):
+                open_id = getattr(event.operator.operator_id, "open_id", "")
+            logger.info("飞书用户打开了机器人私聊: {}", open_id)
+        except Exception as e:
+            logger.debug("处理 p2p 进入事件出错: {}", e)
