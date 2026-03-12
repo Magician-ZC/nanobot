@@ -72,37 +72,41 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { computed } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { getCurrentUser, removeToken } from './api.js'
 
-export default {
-  computed: {
-    loggedIn() {
-      this.$route
-      return !!getCurrentUser()
-    },
-    isAdmin() {
-      const u = getCurrentUser()
-      return u && u.role === 'admin'
-    },
-    userRole() {
-      const u = getCurrentUser()
-      return u ? u.role : ''
-    },
-    userName() {
-      const u = getCurrentUser()
-      return u ? u.userId : ''
-    },
-    userInitial() {
-      const name = this.userName
-      return name ? name.charAt(0).toUpperCase() : '?'
-    },
-  },
-  methods: {
-    logout() {
-      removeToken()
-      this.$router.push('/login')
-    },
-  },
+const router = useRouter()
+const route = useRoute()
+
+const loggedIn = computed(() => {
+  route.path // trigger reactivity on route change
+  return !!getCurrentUser()
+})
+
+const isAdmin = computed(() => {
+  const u = getCurrentUser()
+  return u && u.role === 'admin'
+})
+
+const userRole = computed(() => {
+  const u = getCurrentUser()
+  return u ? u.role : ''
+})
+
+const userName = computed(() => {
+  const u = getCurrentUser()
+  return u ? u.userId : ''
+})
+
+const userInitial = computed(() => {
+  const name = userName.value
+  return name ? name.charAt(0).toUpperCase() : '?'
+})
+
+const logout = () => {
+  removeToken()
+  router.push('/login')
 }
 </script>

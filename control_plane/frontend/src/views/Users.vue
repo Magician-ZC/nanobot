@@ -88,71 +88,112 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, computed, onMounted } from 'vue'
 import { users, tokens } from '../api.js'
 
-export default {
-  data() {
-    return {
-      usersList: [], showCreate: false, editingUser: null,
-      form: { username: '', password: '', role: 'operator' },
-      formError: '', generatedToken: null,
-    }
-  },
-  computed: {
-    baseUrl() { return window.location.origin },
-    dockerCmd() {
-      if (!this.generatedToken) return ''
-      return `docker run -d --name nanobot \\\n  --restart unless-stopped \\\n  -v ~/.nanobot:/root/.nanobot \\\n  -e NANOBOT_REGISTER_TOKEN=${this.generatedToken.id} \\\n  -e NANOBOT_CONTROL_PLANE_URL=${this.baseUrl} \\\n  nanobot-ai gateway`
-    },
-    pipCmd() {
-      if (!this.generatedToken) return ''
-      return `curl -sSL "${this.baseUrl}/api/deploy/script?token_id=${this.generatedToken.id}&type=pip" | bash`
-    },
-  },
-  methods: {
-    async fetchUsers() {
-      try { this.usersList = await users.list() } catch { /* ignore */ }
-    },
-    startEdit(user) {
-      this.editingUser = user
-      this.form = { username: user.username, password: '', role: user.role }
-      this.formError = ''
-    },
-    closeModal() {
-      this.showCreate = false; this.editingUser = null
-      this.form = { username: '', password: '', role: 'operator' }; this.formError = ''
-    },
-    async submitCreate() {
-      this.formError = ''
-      try { await users.create(this.form); this.closeModal(); this.fetchUsers() }
-      catch (e) { this.formError = e.message }
-    },
-    async submitEdit() {
-      this.formError = ''
-      const data = { role: this.form.role }
-      if (this.form.password) data.password = this.form.password
-      try { await users.update(this.editingUser.id, data); this.closeModal(); this.fetchUsers() }
-      catch (e) { this.formError = e.message }
-    },
-    async disableUser(id) {
-      if (!confirm('确定要禁用此用户？')) return
-      try { await users.disable(id); this.fetchUsers() }
-      catch (e) { alert('操作失败: ' + e.message) }
-    },
-    async generateToken(userId) {
-      try { this.generatedToken = await tokens.create(userId) }
-      catch (e) { alert('生成令牌失败: ' + e.message) }
-    },
-    copyToken() { navigator.clipboard.writeText(this.generatedToken.id) },
-    copyDeployCmd(type) { navigator.clipboard.writeText(type === 'docker' ? this.dockerCmd : this.pipCmd) },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() { this.fetchUsers() },
+const usersList = ref([])
+const showCreate = ref(false)
+const editingUser = ref(null)
+const form = ref({ username: '', password: '', role: 'operator' })
+const formError = ref('')
+const generatedToken = ref(null)
+
+const baseUrl = computed(() => window.location.origin)
+
+const dockerCmd = computed(() => {
+  if (!generatedToken.value) return ''
+  return `docker run -d --name nanobot \\\n  --restart unless-stopped \\\n  -v ~/.nanobot:/root/.nanobot \\\n  -e NANOBOT_REGISTER_TOKEN=${generatedToken.value.id} \\\n  -e NANOBOT_CONTROL_PLANE_URL=${baseUrl.value} \\\n  nanobot-ai gateway`
+})
+
+const pipCmd = computed(() => {
+  if (!generatedToken.value) return ''
+  return `curl -sSL "${baseUrl.value}/api/deploy/script?token_id=${generatedToken.value.id}&type=pip" | bash`
+})
+
+const fetchUsers = async () => {
+  try {
+    usersList.value = await users.list()
+  } catch (e) {
+    console.error('Failed to fetch users:', e)
+  }
 }
+
+const startEdit = (user) => {
+  editingUser.value = user
+  form.value = { username: user.username, password: '', role: user.role }
+  formError.value = ''
+}
+
+const closeModal = () => {
+  showCreate.value = false
+  editingUser.value = null
+  form.value = { username: '', password: '', role: 'operator' }
+  formError.value = ''
+}
+
+const submitCreate = async () => {
+  formError.value = ''
+  try {
+    await users.create(form.value)
+    closeModal()
+    fetchUsers()
+  } catch (e) {
+    formError.value = e.message
+  }
+}
+
+const submitEdit = async () => {
+  formError.value = ''
+  const data = { role: form.value.role }
+  if (form.value.password) data.password = form.value.password
+  try {
+    await users.update(editingUser.value.id, data)
+    closeModal()
+    fetchUsers()
+  } catch (e) {
+    formError.value = e.message
+  }
+}
+
+const disableUser = async (id) => {
+  if (!confirm('确定要禁用此用户？')) return
+  try {
+    await users.disable(id)
+    fetchUsers()
+  } catch (e) {
+    alert('操作失败: ' + e.message)
+  }
+}
+
+const generateToken = async (userId) => {
+  try {
+    generatedToken.value = await tokens.create(userId)
+  } catch (e) {
+    alert('生成令牌失败: ' + e.message)
+  }
+}
+
+const copyToken = () => {
+  navigator.clipboard.writeText(generatedToken.value.id)
+}
+
+const copyDeployCmd = (type) => {
+  navigator.clipboard.writeText(type === 'docker' ? dockerCmd.value : pipCmd.value)
+}
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchUsers()
+})
 </script>
 
 <style scoped>

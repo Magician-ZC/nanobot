@@ -155,138 +155,237 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, onMounted } from 'vue'
 import { personas } from '../api.js'
 
-export default {
-  data() {
-    return {
-      list: [], loading: true,
-      showManual: false, showAI: false, editingItem: null,
-      form: { name: '', description: '', persona_content: '', max_memory_chars: 50000 },
-      aiForm: { name: '', purpose: '', age: '', profession: '', traits: '', language: '中文', max_memory_chars: 50000 },
-      aiPreview: null,
-      formError: '', submitting: false, generating: false,
-      viewingMemory: null, merging: false, compressing: false, compressingAll: false, memoryActionMsg: '',
-    }
-  },
-  methods: {
-    async fetchData() {
-      try { this.list = await personas.list() } catch { /* keep */ }
-      finally { this.loading = false }
-    },
-    openCreate(mode) {
-      this.closeForm()
-      if (mode === 'ai') this.showAI = true
-      else this.showManual = true
-    },
-    closeForm() {
-      this.showManual = false; this.showAI = false; this.editingItem = null
-      this.form = { name: '', description: '', persona_content: '', max_memory_chars: 50000 }
-      this.aiForm = { name: '', purpose: '', age: '', profession: '', traits: '', language: '中文', max_memory_chars: 50000 }
-      this.aiPreview = null; this.formError = ''
-    },
-    startEdit(p) {
-      this.editingItem = p
-      this.form = { name: p.name, description: p.description || '', persona_content: p.persona_content || '', max_memory_chars: p.max_memory_chars }
-    },
-    async submitManual() {
-      this.formError = ''
-      if (!this.form.name) { this.formError = '请填写名称'; return }
-      if (!this.form.persona_content) { this.formError = '请填写人格定义'; return }
-      this.submitting = true
-      try {
-        if (this.editingItem) {
-          await personas.update(this.editingItem.id, { persona_content: this.form.persona_content, description: this.form.description, max_memory_chars: this.form.max_memory_chars })
-        } else {
-          await personas.create(this.form)
-        }
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.submitting = false }
-    },
-    _validateAiForm() {
-      if (!this.aiForm.name) { this.formError = '请填写名称'; return false }
-      if (!this.aiForm.purpose) { this.formError = '请填写用途/职责'; return false }
-      return true
-    },
-    async aiGenPreview() {
-      this.formError = ''
-      if (!this._validateAiForm()) return
-      this.generating = true
-      try {
-        const r = await personas.generatePreview(this.aiForm)
-        this.aiPreview = r.persona_content
-      } catch (e) { this.formError = e.message }
-      finally { this.generating = false }
-    },
-    async aiGenDirect() {
-      this.formError = ''
-      if (!this._validateAiForm()) return
-      this.generating = true
-      try {
-        await personas.generate(this.aiForm)
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.generating = false }
-    },
-    async aiSavePreview() {
-      this.formError = ''
-      this.submitting = true
-      try {
-        const desc = `${this.aiForm.profession || ''} | ${this.aiForm.purpose}`.trim().replace(/^\||\|$/g, '').trim()
-        await personas.create({ name: this.aiForm.name, persona_content: this.aiPreview, description: desc, max_memory_chars: this.aiForm.max_memory_chars })
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.submitting = false }
-    },
-    async removeItem(p) {
-      if (!confirm(`确定删除 "${p.name}"？所有记忆也会被删除。`)) return
-      try { await personas.delete(p.id); await this.fetchData() }
-      catch (e) { alert('删除失败: ' + e.message) }
-    },
-    async viewMemory(p) {
-      this.memoryActionMsg = ''
-      try { const data = await personas.getMemory(p.id); this.viewingMemory = { ...data, _id: p.id } }
-      catch (e) { alert('获取记忆失败: ' + e.message) }
-    },
-    async doMerge() {
-      this.merging = true; this.memoryActionMsg = ''
-      try {
-        const r = await personas.merge(this.viewingMemory._id)
-        this.memoryActionMsg = `合并完成 (${r.method})，v${r.merge_version}，${r.chars} 字符`
-        const data = await personas.getMemory(this.viewingMemory._id)
-        this.viewingMemory = { ...data, _id: this.viewingMemory._id }
-      } catch (e) { this.memoryActionMsg = '错误: ' + e.message }
-      finally { this.merging = false }
-    },
-    async doCompress() {
-      this.compressing = true; this.memoryActionMsg = ''
-      try {
-        const r = await personas.compress(this.viewingMemory._id)
-        if (r.status === 'skipped') { this.memoryActionMsg = '跳过: ' + r.message }
-        else {
-          this.memoryActionMsg = `压缩: ${r.before_chars} → ${r.after_chars} 字符`
-          const data = await personas.getMemory(this.viewingMemory._id)
-          this.viewingMemory = { ...data, _id: this.viewingMemory._id }
-        }
-      } catch (e) { this.memoryActionMsg = '错误: ' + e.message }
-      finally { this.compressing = false }
-    },
-    async compressAll() {
-      if (!confirm('批量压缩所有 Persona 记忆？')) return
-      this.compressingAll = true
-      try { const r = await personas.compressAll(); alert(`完成，共压缩 ${r.compressed} 个`) }
-      catch (e) { alert('失败: ' + e.message) }
-      finally { this.compressingAll = false }
-    },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() { this.fetchData() },
+const list = ref([])
+const loading = ref(true)
+
+const showManual = ref(false)
+const showAI = ref(false)
+const editingItem = ref(null)
+
+const form = ref({ name: '', description: '', persona_content: '', max_memory_chars: 50000 })
+const aiForm = ref({ name: '', purpose: '', age: '', profession: '', traits: '', language: '中文', max_memory_chars: 50000 })
+const aiPreview = ref(null)
+
+const formError = ref('')
+const submitting = ref(false)
+const generating = ref(false)
+
+const viewingMemory = ref(null)
+const merging = ref(false)
+const compressing = ref(false)
+const compressingAll = ref(false)
+const memoryActionMsg = ref('')
+
+const fetchData = async () => {
+  try {
+    list.value = await personas.list()
+  } catch (e) {
+    console.error('Failed to fetch personas:', e)
+  } finally {
+    loading.value = false
+  }
 }
+
+const openCreate = (mode) => {
+  closeForm()
+  if (mode === 'ai') showAI.value = true
+  else showManual.value = true
+}
+
+const closeForm = () => {
+  showManual.value = false
+  showAI.value = false
+  editingItem.value = null
+  form.value = { name: '', description: '', persona_content: '', max_memory_chars: 50000 }
+  aiForm.value = { name: '', purpose: '', age: '', profession: '', traits: '', language: '中文', max_memory_chars: 50000 }
+  aiPreview.value = null
+  formError.value = ''
+}
+
+const startEdit = (p) => {
+  editingItem.value = p
+  form.value = {
+    name: p.name,
+    description: p.description || '',
+    persona_content: p.persona_content || '',
+    max_memory_chars: p.max_memory_chars
+  }
+}
+
+const submitManual = async () => {
+  formError.value = ''
+  if (!form.value.name) {
+    formError.value = '请填写名称'
+    return
+  }
+  if (!form.value.persona_content) {
+    formError.value = '请填写人格定义'
+    return
+  }
+  submitting.value = true
+  try {
+    if (editingItem.value) {
+      await personas.update(editingItem.value.id, {
+        persona_content: form.value.persona_content,
+        description: form.value.description,
+        max_memory_chars: form.value.max_memory_chars
+      })
+    } else {
+      await personas.create(form.value)
+    }
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+const _validateAiForm = () => {
+  if (!aiForm.value.name) {
+    formError.value = '请填写名称'
+    return false
+  }
+  if (!aiForm.value.purpose) {
+    formError.value = '请填写用途/职责'
+    return false
+  }
+  return true
+}
+
+const aiGenPreview = async () => {
+  formError.value = ''
+  if (!_validateAiForm()) return
+  generating.value = true
+  try {
+    const r = await personas.generatePreview(aiForm.value)
+    aiPreview.value = r.persona_content
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    generating.value = false
+  }
+}
+
+const aiGenDirect = async () => {
+  formError.value = ''
+  if (!_validateAiForm()) return
+  generating.value = true
+  try {
+    await personas.generate(aiForm.value)
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    generating.value = false
+  }
+}
+
+const aiSavePreview = async () => {
+  formError.value = ''
+  submitting.value = true
+  try {
+    const desc = `${aiForm.value.profession || ''} | ${aiForm.value.purpose}`.trim().replace(/^\||\|$/g, '').trim()
+    await personas.create({
+      name: aiForm.value.name,
+      persona_content: aiPreview.value,
+      description: desc,
+      max_memory_chars: aiForm.value.max_memory_chars
+    })
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+const removeItem = async (p) => {
+  if (!confirm(`确定删除 "${p.name}"？所有记忆也会被删除。`)) return
+  try {
+    await personas.delete(p.id)
+    await fetchData()
+  } catch (e) {
+    alert('删除失败: ' + e.message)
+  }
+}
+
+const viewMemory = async (p) => {
+  memoryActionMsg.value = ''
+  try {
+    const data = await personas.getMemory(p.id)
+    viewingMemory.value = { ...data, _id: p.id }
+  } catch (e) {
+    alert('获取记忆失败: ' + e.message)
+  }
+}
+
+const doMerge = async () => {
+  merging.value = true
+  memoryActionMsg.value = ''
+  try {
+    const r = await personas.merge(viewingMemory.value._id)
+    memoryActionMsg.value = `合并完成 (${r.method})，v${r.merge_version}，${r.chars} 字符`
+    const data = await personas.getMemory(viewingMemory.value._id)
+    viewingMemory.value = { ...data, _id: viewingMemory.value._id }
+  } catch (e) {
+    memoryActionMsg.value = '错误: ' + e.message
+  } finally {
+    merging.value = false
+  }
+}
+
+const doCompress = async () => {
+  compressing.value = true
+  memoryActionMsg.value = ''
+  try {
+    const r = await personas.compress(viewingMemory.value._id)
+    if (r.status === 'skipped') {
+      memoryActionMsg.value = '跳过: ' + r.message
+    } else {
+      memoryActionMsg.value = `压缩: ${r.before_chars} → ${r.after_chars} 字符`
+      const data = await personas.getMemory(viewingMemory.value._id)
+      viewingMemory.value = { ...data, _id: viewingMemory.value._id }
+    }
+  } catch (e) {
+    memoryActionMsg.value = '错误: ' + e.message
+  } finally {
+    compressing.value = false
+  }
+}
+
+const compressAll = async () => {
+  if (!confirm('批量压缩所有 Persona 记忆？')) return
+  compressingAll.value = true
+  try {
+    const r = await personas.compressAll()
+    alert(`完成，共压缩 ${r.compressed} 个`)
+  } catch (e) {
+    alert('失败: ' + e.message)
+  } finally {
+    compressingAll.value = false
+  }
+}
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchData()
+})
 </script>
 
 <style scoped>

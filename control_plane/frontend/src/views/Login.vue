@@ -24,28 +24,30 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { auth, setToken } from '../api.js'
 
-export default {
-  data() {
-    return { username: '', password: '', error: '', loading: false }
-  },
-  methods: {
-    async handleLogin() {
-      this.error = ''
-      this.loading = true
-      try {
-        const res = await auth.login(this.username, this.password)
-        setToken(res.access_token)
-        this.$router.push('/')
-      } catch (e) {
-        this.error = e.message === 'Unauthorized' ? '用户名或密码错误' : e.message
-      } finally {
-        this.loading = false
-      }
-    },
-  },
+const router = useRouter()
+
+const username = ref('')
+const password = ref('')
+const error = ref('')
+const loading = ref(false)
+
+const handleLogin = async () => {
+  error.value = ''
+  loading.value = true
+  try {
+    const res = await auth.login(username.value, password.value)
+    setToken(res.access_token)
+    router.push('/')
+  } catch (e) {
+    error.value = e.message === 'Unauthorized' ? '用户名或密码错误' : e.message
+  } finally {
+    loading.value = false
+  }
 }
 </script>
 

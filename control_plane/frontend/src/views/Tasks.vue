@@ -27,26 +27,39 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, onMounted, onUnmounted } from 'vue'
 import { tasks } from '../api.js'
 
-export default {
-  data() { return { tasksList: [], loading: true, timer: null } },
-  methods: {
-    async fetchTasks() {
-      try { this.tasksList = await tasks.list() }
-      catch { /* silent */ }
-      finally { this.loading = false }
-    },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() {
-    this.fetchTasks()
-    this.timer = setInterval(this.fetchTasks, 10000)
-  },
-  unmounted() { clearInterval(this.timer) },
+const tasksList = ref([])
+const loading = ref(true)
+let timer = null
+
+const fetchTasks = async () => {
+  try {
+    tasksList.value = await tasks.list()
+  } catch (e) {
+    console.error('Failed to fetch tasks:', e)
+  } finally {
+    loading.value = false
+  }
 }
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchTasks()
+  timer = setInterval(fetchTasks, 10000)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
 </script>

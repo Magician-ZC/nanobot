@@ -89,38 +89,51 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { nodes, users, getCurrentUser } from '../api.js'
 
-export default {
-  data() {
-    return { nodesList: [], usersList: [], loading: true, timer: null }
-  },
-  computed: {
-    isAdmin() {
-      const u = getCurrentUser()
-      return u && u.role === 'admin'
-    },
-    onlineCount() { return this.nodesList.filter(n => n.status === 'online').length },
-    offlineCount() { return this.nodesList.filter(n => n.status !== 'online').length },
-  },
-  methods: {
-    async fetchData() {
-      try {
-        this.nodesList = await nodes.list()
-        if (this.isAdmin) this.usersList = await users.list()
-      } catch { /* keep last */ }
-      finally { this.loading = false }
-    },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() {
-    this.fetchData()
-    this.timer = setInterval(this.fetchData, 15000)
-  },
-  unmounted() { clearInterval(this.timer) },
+const nodesList = ref([])
+const usersList = ref([])
+const loading = ref(true)
+let timer = null
+
+const isAdmin = computed(() => {
+  const u = getCurrentUser()
+  return u && u.role === 'admin'
+})
+
+const onlineCount = computed(() => nodesList.value.filter(n => n.status === 'online').length)
+const offlineCount = computed(() => nodesList.value.filter(n => n.status !== 'online').length)
+
+const fetchData = async () => {
+  try {
+    nodesList.value = await nodes.list()
+    if (isAdmin.value) {
+      usersList.value = await users.list()
+    }
+  } catch (e) {
+    console.error('Failed to fetch dashboard data:', e)
+  } finally {
+    loading.value = false
+  }
 }
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchData()
+  timer = setInterval(fetchData, 15000)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
 </script>

@@ -132,105 +132,168 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, onMounted } from 'vue'
 import { skills } from '../api.js'
 
-export default {
-  data() {
-    return {
-      skillsList: [], loading: true,
-      showManual: false, showAI: false, editingItem: null,
-      form: { name: '', description: '', source: 'custom', content: '' },
-      aiForm: { name: '', purpose: '', description: '', tools_hint: '', language: '中文' },
-      aiPreview: null, viewingContent: null,
-      formError: '', submitting: false, generating: false,
-    }
-  },
-  methods: {
-    async fetchData() {
-      try { this.skillsList = await skills.list() }
-      catch { /* keep */ }
-      finally { this.loading = false }
-    },
-    openCreate(mode) {
-      this.closeForm()
-      if (mode === 'ai') this.showAI = true
-      else this.showManual = true
-    },
-    closeForm() {
-      this.showManual = false; this.showAI = false; this.editingItem = null
-      this.form = { name: '', description: '', source: 'custom', content: '' }
-      this.aiForm = { name: '', purpose: '', description: '', tools_hint: '', language: '中文' }
-      this.aiPreview = null; this.formError = ''
-    },
-    startEdit(s) {
-      this.editingItem = s
-      this.form = { name: s.name, description: s.description || '', source: s.source, content: s.content || '' }
-    },
-    async submitManual() {
-      this.formError = ''
-      if (!this.form.name) { this.formError = '请填写名称'; return }
-      this.submitting = true
-      try {
-        if (this.editingItem) {
-          await skills.update(this.editingItem.id, {
-            name: this.form.name, description: this.form.description,
-            source: this.form.source, content: this.form.content,
-          })
-        } else {
-          await skills.create(this.form)
-        }
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.submitting = false }
-    },
-    _validateAiForm() {
-      if (!this.aiForm.name) { this.formError = '请填写名称'; return false }
-      if (!this.aiForm.purpose) { this.formError = '请填写用途/目标'; return false }
-      return true
-    },
-    async aiGenPreview() {
-      this.formError = ''
-      if (!this._validateAiForm()) return
-      this.generating = true
-      try {
-        const r = await skills.generatePreview(this.aiForm)
-        this.aiPreview = r.content
-      } catch (e) { this.formError = e.message }
-      finally { this.generating = false }
-    },
-    async aiGenDirect() {
-      this.formError = ''
-      if (!this._validateAiForm()) return
-      this.generating = true
-      try {
-        await skills.generate(this.aiForm)
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.generating = false }
-    },
-    async aiSavePreview() {
-      this.formError = ''
-      this.submitting = true
-      try {
-        const desc = this.aiForm.description || this.aiForm.purpose.substring(0, 100)
-        await skills.create({ name: this.aiForm.name, description: desc, source: 'custom', content: this.aiPreview })
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.submitting = false }
-    },
-    async removeSkill(s) {
-      if (!confirm(`确定删除 Skill "${s.name}"？`)) return
-      try { await skills.delete(s.id); await this.fetchData() }
-      catch (e) { alert('删除失败: ' + e.message) }
-    },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() { this.fetchData() },
+const skillsList = ref([])
+const loading = ref(true)
+
+const showManual = ref(false)
+const showAI = ref(false)
+const editingItem = ref(null)
+
+const form = ref({ name: '', description: '', source: 'custom', content: '' })
+const aiForm = ref({ name: '', purpose: '', description: '', tools_hint: '', language: '中文' })
+
+const aiPreview = ref(null)
+const viewingContent = ref(null)
+
+const formError = ref('')
+const submitting = ref(false)
+const generating = ref(false)
+
+const fetchData = async () => {
+  try {
+    skillsList.value = await skills.list()
+  } catch (e) {
+    console.error('Failed to fetch skills:', e)
+  } finally {
+    loading.value = false
+  }
 }
+
+const openCreate = (mode) => {
+  closeForm()
+  if (mode === 'ai') showAI.value = true
+  else showManual.value = true
+}
+
+const closeForm = () => {
+  showManual.value = false
+  showAI.value = false
+  editingItem.value = null
+  form.value = { name: '', description: '', source: 'custom', content: '' }
+  aiForm.value = { name: '', purpose: '', description: '', tools_hint: '', language: '中文' }
+  aiPreview.value = null
+  formError.value = ''
+}
+
+const startEdit = (s) => {
+  editingItem.value = s
+  form.value = { name: s.name, description: s.description || '', source: s.source, content: s.content || '' }
+}
+
+const submitManual = async () => {
+  formError.value = ''
+  if (!form.value.name) {
+    formError.value = '请填写名称'
+    return
+  }
+  submitting.value = true
+  try {
+    if (editingItem.value) {
+      await skills.update(editingItem.value.id, {
+        name: form.value.name,
+        description: form.value.description,
+        source: form.value.source,
+        content: form.value.content,
+      })
+    } else {
+      await skills.create(form.value)
+    }
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+const _validateAiForm = () => {
+  if (!aiForm.value.name) {
+    formError.value = '请填写名称'
+    return false
+  }
+  if (!aiForm.value.purpose) {
+    formError.value = '请填写用途/目标'
+    return false
+  }
+  return true
+}
+
+const aiGenPreview = async () => {
+  formError.value = ''
+  if (!_validateAiForm()) return
+  generating.value = true
+  try {
+    const r = await skills.generatePreview(aiForm.value)
+    aiPreview.value = r.content
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    generating.value = false
+  }
+}
+
+const aiGenDirect = async () => {
+  formError.value = ''
+  if (!_validateAiForm()) return
+  generating.value = true
+  try {
+    await skills.generate(aiForm.value)
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    generating.value = false
+  }
+}
+
+const aiSavePreview = async () => {
+  formError.value = ''
+  submitting.value = true
+  try {
+    const desc = aiForm.value.description || aiForm.value.purpose.substring(0, 100)
+    await skills.create({
+      name: aiForm.value.name,
+      description: desc,
+      source: 'custom',
+      content: aiPreview.value
+    })
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+const removeSkill = async (s) => {
+  if (!confirm(`确定删除 Skill "${s.name}"？`)) return
+  try {
+    await skills.delete(s.id)
+    await fetchData()
+  } catch (e) {
+    alert('删除失败: ' + e.message)
+  }
+}
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchData()
+})
 </script>
 
 <style scoped>

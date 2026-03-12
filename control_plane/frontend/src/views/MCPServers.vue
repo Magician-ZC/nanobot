@@ -92,121 +92,219 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, onMounted } from 'vue'
 import { mcpServers } from '../api.js'
 
-export default {
-  data() {
-    return {
-      servers: [], loading: true, showForm: false, editingServer: null,
-      form: { name: '', connection_type: 'stdio', description: '' },
-      stdioForm: { command: '', args: '', env: '' },
-      httpForm: { url: '', headers: '', tool_timeout: 30 },
-      formError: '', submitting: false, testing: false, testResult: null,
-    }
-  },
-  methods: {
-    async fetchData() {
-      try { this.servers = (await mcpServers.list()).map(s => ({ ...s, _testing: false, _testResult: null })) }
-      catch { /* keep */ }
-      finally { this.loading = false }
-    },
-    resetSubForms() {
-      this.stdioForm = { command: '', args: '', env: '' }
-      this.httpForm = { url: '', headers: '', tool_timeout: 30 }
-    },
-    onTypeChange() { this.resetSubForms() },
-    openAdd() {
-      this.editingServer = null
-      this.form = { name: '', connection_type: 'stdio', description: '' }
-      this.resetSubForms(); this.formError = ''; this.testResult = null; this.showForm = true
-    },
-    startEdit(s) {
-      this.editingServer = s
-      this.form = { name: s.name, connection_type: s.connection_type, description: s.description || '' }
-      this.resetSubForms()
-      const c = s.config || {}
-      if (s.connection_type === 'stdio') {
-        this.stdioForm.command = c.command || ''
-        this.stdioForm.args = (c.args || []).join(', ')
-        this.stdioForm.env = c.env ? JSON.stringify(c.env) : ''
-      } else {
-        this.httpForm.url = c.url || ''
-        this.httpForm.headers = c.headers ? JSON.stringify(c.headers) : ''
-        this.httpForm.tool_timeout = c.tool_timeout || 30
-      }
-      this.formError = ''; this.testResult = null; this.showForm = true
-    },
-    closeForm() {
-      this.showForm = false; this.editingServer = null
-      this.form = { name: '', connection_type: 'stdio', description: '' }
-      this.resetSubForms(); this.formError = ''; this.testResult = null
-    },
-    buildConfig() {
-      if (this.form.connection_type === 'stdio') {
-        const cfg = { command: this.stdioForm.command }
-        if (this.stdioForm.args) cfg.args = this.stdioForm.args.split(',').map(s => s.trim())
-        if (this.stdioForm.env) {
-          try { cfg.env = JSON.parse(this.stdioForm.env) } catch { throw new Error('环境变量 JSON 无效') }
-        }
-        return cfg
-      } else {
-        const cfg = { url: this.httpForm.url, type: this.form.connection_type }
-        if (this.httpForm.headers) {
-          try { cfg.headers = JSON.parse(this.httpForm.headers) } catch { throw new Error('Headers JSON 无效') }
-        }
-        if (this.httpForm.tool_timeout && this.httpForm.tool_timeout !== 30) {
-          cfg.tool_timeout = this.httpForm.tool_timeout
-        }
-        return cfg
-      }
-    },
-    async submitForm() {
-      this.formError = ''
-      if (!this.form.name) { this.formError = '请填写名称'; return }
-      let config
-      try { config = this.buildConfig() } catch (e) { this.formError = e.message; return }
-      if (this.form.connection_type === 'stdio' && !config.command) { this.formError = '请填写命令'; return }
-      if (this.form.connection_type !== 'stdio' && !config.url) { this.formError = '请填写 URL'; return }
-      this.submitting = true
-      try {
-        const data = { name: this.form.name, connection_type: this.form.connection_type, config, description: this.form.description }
-        if (this.editingServer) await mcpServers.update(this.editingServer.id, data)
-        else await mcpServers.create(data)
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.submitting = false }
-    },
-    async removeServer(s) {
-      if (!confirm(`确定删除 "${s.name}"？`)) return
-      try { await mcpServers.delete(s.id); await this.fetchData() }
-      catch (e) { alert('删除失败: ' + e.message) }
-    },
-    async testConnection() {
-      this.testResult = null
-      let config
-      try { config = this.buildConfig() } catch (e) { this.testResult = { success: false, message: e.message }; return }
-      this.testing = true
-      try { this.testResult = await mcpServers.testConnection({ name: this.form.name || 'test', connection_type: this.form.connection_type, config }) }
-      catch (e) { this.testResult = { success: false, message: e.message } }
-      finally { this.testing = false }
-    },
-    async testExisting(s) {
-      s._testing = true; s._testResult = null
-      try { s._testResult = await mcpServers.testConnection({ name: s.name, connection_type: s.connection_type, config: s.config }) }
-      catch (e) { s._testResult = { success: false, message: e.message } }
-      finally { s._testing = false }
-    },
-    configSummary(s) {
-      const c = s.config || {}
-      if (s.connection_type === 'stdio') return c.command ? `${c.command} ${(c.args || []).join(' ')}` : '-'
-      return c.url || '-'
-    },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() { this.fetchData() },
+const servers = ref([])
+const loading = ref(true)
+const showForm = ref(false)
+const editingServer = ref(null)
+
+const form = ref({ name: '', connection_type: 'stdio', description: '' })
+const stdioForm = ref({ command: '', args: '', env: '' })
+const httpForm = ref({ url: '', headers: '', tool_timeout: 30 })
+
+const formError = ref('')
+const submitting = ref(false)
+const testing = ref(false)
+const testResult = ref(null)
+
+const fetchData = async () => {
+  try {
+    const list = await mcpServers.list()
+    servers.value = list.map(s => ({ ...s, _testing: false, _testResult: null }))
+  } catch (e) {
+    console.error('Failed to fetch MCP servers:', e)
+  } finally {
+    loading.value = false
+  }
 }
+
+const resetSubForms = () => {
+  stdioForm.value = { command: '', args: '', env: '' }
+  httpForm.value = { url: '', headers: '', tool_timeout: 30 }
+}
+
+const onTypeChange = () => {
+  resetSubForms()
+}
+
+const openAdd = () => {
+  editingServer.value = null
+  form.value = { name: '', connection_type: 'stdio', description: '' }
+  resetSubForms()
+  formError.value = ''
+  testResult.value = null
+  showForm.value = true
+}
+
+const startEdit = (s) => {
+  editingServer.value = s
+  form.value = { name: s.name, connection_type: s.connection_type, description: s.description || '' }
+  resetSubForms()
+  const c = s.config || {}
+  if (s.connection_type === 'stdio') {
+    stdioForm.value.command = c.command || ''
+    stdioForm.value.args = (c.args || []).join(', ')
+    stdioForm.value.env = c.env ? JSON.stringify(c.env) : ''
+  } else {
+    httpForm.value.url = c.url || ''
+    httpForm.value.headers = c.headers ? JSON.stringify(c.headers) : ''
+    httpForm.value.tool_timeout = c.tool_timeout || 30
+  }
+  formError.value = ''
+  testResult.value = null
+  showForm.value = true
+}
+
+const closeForm = () => {
+  showForm.value = false
+  editingServer.value = null
+  form.value = { name: '', connection_type: 'stdio', description: '' }
+  resetSubForms()
+  formError.value = ''
+  testResult.value = null
+}
+
+const buildConfig = () => {
+  if (form.value.connection_type === 'stdio') {
+    const cfg = { command: stdioForm.value.command }
+    if (stdioForm.value.args) cfg.args = stdioForm.value.args.split(',').map(s => s.trim())
+    if (stdioForm.value.env) {
+      try {
+        cfg.env = JSON.parse(stdioForm.value.env)
+      } catch {
+        throw new Error('环境变量 JSON 无效')
+      }
+    }
+    return cfg
+  } else {
+    const cfg = { url: httpForm.value.url, type: form.value.connection_type }
+    if (httpForm.value.headers) {
+      try {
+        cfg.headers = JSON.parse(httpForm.value.headers)
+      } catch {
+        throw new Error('Headers JSON 无效')
+      }
+    }
+    if (httpForm.value.tool_timeout && httpForm.value.tool_timeout !== 30) {
+      cfg.tool_timeout = httpForm.value.tool_timeout
+    }
+    return cfg
+  }
+}
+
+const submitForm = async () => {
+  formError.value = ''
+  if (!form.value.name) {
+    formError.value = '请填写名称'
+    return
+  }
+  let config
+  try {
+    config = buildConfig()
+  } catch (e) {
+    formError.value = e.message
+    return
+  }
+  if (form.value.connection_type === 'stdio' && !config.command) {
+    formError.value = '请填写命令'
+    return
+  }
+  if (form.value.connection_type !== 'stdio' && !config.url) {
+    formError.value = '请填写 URL'
+    return
+  }
+  submitting.value = true
+  try {
+    const data = {
+      name: form.value.name,
+      connection_type: form.value.connection_type,
+      config,
+      description: form.value.description
+    }
+    if (editingServer.value) {
+      await mcpServers.update(editingServer.value.id, data)
+    } else {
+      await mcpServers.create(data)
+    }
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+const removeServer = async (s) => {
+  if (!confirm(`确定删除 "${s.name}"？`)) return
+  try {
+    await mcpServers.delete(s.id)
+    await fetchData()
+  } catch (e) {
+    alert('删除失败: ' + e.message)
+  }
+}
+
+const testConnection = async () => {
+  testResult.value = null
+  let config
+  try {
+    config = buildConfig()
+  } catch (e) {
+    testResult.value = { success: false, message: e.message }
+    return
+  }
+  testing.value = true
+  try {
+    testResult.value = await mcpServers.testConnection({
+      name: form.value.name || 'test',
+      connection_type: form.value.connection_type,
+      config
+    })
+  } catch (e) {
+    testResult.value = { success: false, message: e.message }
+  } finally {
+    testing.value = false
+  }
+}
+
+const testExisting = async (s) => {
+  s._testing = true
+  s._testResult = null
+  try {
+    s._testResult = await mcpServers.testConnection({
+      name: s.name,
+      connection_type: s.connection_type,
+      config: s.config
+    })
+  } catch (e) {
+    s._testResult = { success: false, message: e.message }
+  } finally {
+    s._testing = false
+  }
+}
+
+const configSummary = (s) => {
+  const c = s.config || {}
+  if (s.connection_type === 'stdio') {
+    return c.command ? `${c.command} ${(c.args || []).join(' ')}` : '-'
+  }
+  return c.url || '-'
+}
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchData()
+})
 </script>

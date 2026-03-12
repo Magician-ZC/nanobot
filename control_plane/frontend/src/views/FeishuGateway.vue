@@ -171,81 +171,194 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { feishuGateway, nodes } from '../api.js'
 
-export default {
-  data() {
-    return {
-      activeTab: 'config',
-      tabs: [{ key: 'config', label: '网关配置' }, { key: 'bindings', label: '绑定管理' }, { key: 'conversations', label: '对话记录' }],
-      gwStatus: {},
-      configForm: { app_id: '', app_secret: '', encrypt_key: '', verification_token: '' },
-      configError: '', configSuccess: '',
-      nodesList: [],
-      bindings: [], showBindingModal: false,
-      bindingForm: { feishu_open_id: '', feishu_name: '', node_id: '' }, bindingError: '',
-      bindCodes: [], showBindCodeModal: false,
-      bindCodeForm: { node_id: '', expires_minutes: 30 }, bindCodeError: '',
-      sessions: [], sessionFilter: { node_id: '' },
-      selectedSession: null, sessionMessages: [],
-      timer: null,
-    }
-  },
-  watch: {
-    activeTab(tab) {
-      if (tab === 'bindings') { this.fetchBindings(); this.fetchBindCodes() }
-      else if (tab === 'conversations') this.fetchSessions()
-    },
-  },
-  methods: {
-    async fetchStatus() { try { this.gwStatus = await feishuGateway.getStatus() } catch { /* silent */ } },
-    async fetchConfig() { try { const cfg = await feishuGateway.getConfig(); this.configForm.app_id = cfg.app_id || '' } catch { /* not configured */ } },
-    async fetchNodes() { try { this.nodesList = await nodes.list() } catch { /* ignore */ } },
-    async fetchBindings() { try { this.bindings = await feishuGateway.listBindings() } catch { /* ignore */ } },
-    async fetchBindCodes() { try { this.bindCodes = await feishuGateway.listBindCodes() } catch { /* ignore */ } },
-    async fetchSessions() { try { this.sessions = await feishuGateway.listSessions(this.sessionFilter.node_id || undefined) } catch { /* ignore */ } },
-    async openSession(s) {
-      this.selectedSession = s
-      try { this.sessionMessages = await feishuGateway.getConversation(s.feishu_open_id, 200) } catch { this.sessionMessages = [] }
-    },
-    async saveConfig() {
-      this.configError = ''; this.configSuccess = ''
-      try { await feishuGateway.saveConfig(this.configForm); this.configSuccess = '配置已保存'; this.configForm.app_secret = ''; this.fetchStatus() }
-      catch (e) { this.configError = e.message }
-    },
-    async startGateway() { try { await feishuGateway.start(); this.fetchStatus() } catch (e) { alert('启动失败: ' + e.message) } },
-    async stopGateway() { try { await feishuGateway.stop(); this.fetchStatus() } catch (e) { alert('停止失败: ' + e.message) } },
-    async submitBinding() {
-      this.bindingError = ''
-      try { await feishuGateway.createBinding(this.bindingForm); this.showBindingModal = false; this.bindingForm = { feishu_open_id: '', feishu_name: '', node_id: '' }; this.fetchBindings() }
-      catch (e) { this.bindingError = e.message }
-    },
-    async removeBinding(id) {
-      if (!confirm('确定删除此绑定？')) return
-      try { await feishuGateway.deleteBinding(id); this.fetchBindings() } catch (e) { alert('删除失败: ' + e.message) }
-    },
-    async submitBindCode() {
-      this.bindCodeError = ''
-      try { await feishuGateway.createBindCode(this.bindCodeForm); this.showBindCodeModal = false; this.bindCodeForm = { node_id: '', expires_minutes: 30 }; this.fetchBindCodes() }
-      catch (e) { this.bindCodeError = e.message }
-    },
-    getNodeName(nodeId) { const n = this.nodesList.find(n => n.id === nodeId); return n ? n.hostname : nodeId },
-    formatTime(t) { if (!t) return '-'; try { return new Date(t).toLocaleString('zh-CN') } catch { return t } },
-    formatDuration(since) {
-      if (!since) return '-'
-      const ms = Date.now() - new Date(since).getTime()
-      if (ms < 0) return '-'
-      const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000)
-      return h > 0 ? `${h}小时${m}分钟` : `${m}分钟`
-    },
-  },
-  mounted() {
-    this.fetchStatus(); this.fetchConfig(); this.fetchNodes(); this.fetchBindings()
-    this.timer = setInterval(this.fetchStatus, 15000)
-  },
-  unmounted() { clearInterval(this.timer) },
+const activeTab = ref('config')
+const tabs = ref([
+  { key: 'config', label: '网关配置' },
+  { key: 'bindings', label: '绑定管理' },
+  { key: 'conversations', label: '对话记录' }
+])
+
+const gwStatus = ref({})
+const configForm = ref({ app_id: '', app_secret: '', encrypt_key: '', verification_token: '' })
+const configError = ref('')
+const configSuccess = ref('')
+const nodesList = ref([])
+
+const bindings = ref([])
+const showBindingModal = ref(false)
+const bindingForm = ref({ feishu_open_id: '', feishu_name: '', node_id: '' })
+const bindingError = ref('')
+
+const bindCodes = ref([])
+const showBindCodeModal = ref(false)
+const bindCodeForm = ref({ node_id: '', expires_minutes: 30 })
+const bindCodeError = ref('')
+
+const sessions = ref([])
+const sessionFilter = ref({ node_id: '' })
+const selectedSession = ref(null)
+const sessionMessages = ref([])
+
+let timer = null
+
+const fetchStatus = async () => {
+  try {
+    gwStatus.value = await feishuGateway.getStatus()
+  } catch { /* silent */ }
 }
+
+const fetchConfig = async () => {
+  try {
+    const cfg = await feishuGateway.getConfig()
+    configForm.value.app_id = cfg.app_id || ''
+  } catch { /* not configured */ }
+}
+
+const fetchNodes = async () => {
+  try {
+    nodesList.value = await nodes.list()
+  } catch { /* ignore */ }
+}
+
+const fetchBindings = async () => {
+  try {
+    bindings.value = await feishuGateway.listBindings()
+  } catch { /* ignore */ }
+}
+
+const fetchBindCodes = async () => {
+  try {
+    bindCodes.value = await feishuGateway.listBindCodes()
+  } catch { /* ignore */ }
+}
+
+const fetchSessions = async () => {
+  try {
+    sessions.value = await feishuGateway.listSessions(sessionFilter.value.node_id || undefined)
+  } catch { /* ignore */ }
+}
+
+const openSession = async (s) => {
+  selectedSession.value = s
+  try {
+    sessionMessages.value = await feishuGateway.getConversation(s.feishu_open_id, 200)
+  } catch {
+    sessionMessages.value = []
+  }
+}
+
+const saveConfig = async () => {
+  configError.value = ''
+  configSuccess.value = ''
+  try {
+    await feishuGateway.saveConfig(configForm.value)
+    configSuccess.value = '配置已保存'
+    configForm.value.app_secret = ''
+    fetchStatus()
+  } catch (e) {
+    configError.value = e.message
+  }
+}
+
+const startGateway = async () => {
+  try {
+    await feishuGateway.start()
+    fetchStatus()
+  } catch (e) {
+    alert('启动失败: ' + e.message)
+  }
+}
+
+const stopGateway = async () => {
+  try {
+    await feishuGateway.stop()
+    fetchStatus()
+  } catch (e) {
+    alert('停止失败: ' + e.message)
+  }
+}
+
+const submitBinding = async () => {
+  bindingError.value = ''
+  try {
+    await feishuGateway.createBinding(bindingForm.value)
+    showBindingModal.value = false
+    bindingForm.value = { feishu_open_id: '', feishu_name: '', node_id: '' }
+    fetchBindings()
+  } catch (e) {
+    bindingError.value = e.message
+  }
+}
+
+const removeBinding = async (id) => {
+  if (!confirm('确定删除此绑定？')) return
+  try {
+    await feishuGateway.deleteBinding(id)
+    fetchBindings()
+  } catch (e) {
+    alert('删除失败: ' + e.message)
+  }
+}
+
+const submitBindCode = async () => {
+  bindCodeError.value = ''
+  try {
+    await feishuGateway.createBindCode(bindCodeForm.value)
+    showBindCodeModal.value = false
+    bindCodeForm.value = { node_id: '', expires_minutes: 30 }
+    fetchBindCodes()
+  } catch (e) {
+    bindCodeError.value = e.message
+  }
+}
+
+const getNodeName = (nodeId) => {
+  const n = nodesList.value.find(n => n.id === nodeId)
+  return n ? n.hostname : nodeId
+}
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+const formatDuration = (since) => {
+  if (!since) return '-'
+  const ms = Date.now() - new Date(since).getTime()
+  if (ms < 0) return '-'
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  return h > 0 ? `${h}小时${m}分钟` : `${m}分钟`
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'bindings') {
+    fetchBindings()
+    fetchBindCodes()
+  } else if (tab === 'conversations') {
+    fetchSessions()
+  }
+})
+
+onMounted(() => {
+  fetchStatus()
+  fetchConfig()
+  fetchNodes()
+  fetchBindings()
+  timer = setInterval(fetchStatus, 15000)
+})
+
+onUnmounted(() => {
+  if (timer) clearInterval(timer)
+})
 </script>
 
 <style scoped>

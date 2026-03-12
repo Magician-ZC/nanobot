@@ -136,7 +136,8 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, onMounted } from 'vue'
 import { llmKeys, tokenUsage } from '../api.js'
 
 const PROVIDERS = [
@@ -146,63 +147,112 @@ const PROVIDERS = [
   'azure_openai',
 ]
 
-export default {
-  data() {
-    return {
-      keys: [], loading: true, providers: PROVIDERS,
-      showAdd: false, editingKey: null,
-      form: this.emptyForm(),
-      formError: '', submitting: false,
-      summary: {}, nodeUsage: [], records: [],
-    }
-  },
-  methods: {
-    emptyForm() {
-      return { name: '', provider: '', api_key: '', api_base: '', max_concurrent: 5, usage_limit: 0, is_active: true }
-    },
-    async fetchData() {
-      try {
-        this.keys = await llmKeys.list()
-        this.summary = await tokenUsage.summary()
-        this.nodeUsage = await tokenUsage.byNode()
-        this.records = await tokenUsage.query({ limit: 50 })
-      } catch { /* keep */ }
-      finally { this.loading = false }
-    },
-    closeForm() {
-      this.showAdd = false; this.editingKey = null
-      this.form = this.emptyForm(); this.formError = ''
-    },
-    startEdit(k) {
-      this.editingKey = k
-      this.form = { name: k.name, provider: k.provider, api_key: '', api_base: k.api_base || '', max_concurrent: k.max_concurrent, usage_limit: k.usage_limit, is_active: k.is_active }
-    },
-    async submitForm() {
-      this.formError = ''
-      if (!this.editingKey && (!this.form.name || !this.form.provider || !this.form.api_key)) {
-        this.formError = '请填写名称、Provider 和 API Key'; return
-      }
-      this.submitting = true
-      try {
-        if (this.editingKey) {
-          await llmKeys.update(this.editingKey.id, { name: this.form.name, max_concurrent: this.form.max_concurrent, usage_limit: this.form.usage_limit, is_active: this.form.is_active })
-        } else {
-          await llmKeys.create({ name: this.form.name, provider: this.form.provider, api_key: this.form.api_key, api_base: this.form.api_base, max_concurrent: this.form.max_concurrent, usage_limit: this.form.usage_limit })
-        }
-        this.closeForm(); await this.fetchData()
-      } catch (e) { this.formError = e.message }
-      finally { this.submitting = false }
-    },
-    async removeKey(k) {
-      if (!confirm(`确定删除 Key "${k.name}"？`)) return
-      try { await llmKeys.delete(k.id); await this.fetchData() }
-      catch (e) { alert('删除失败: ' + e.message) }
-    },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() { this.fetchData() },
+const emptyForm = () => ({
+  name: '', provider: '', api_key: '', api_base: '',
+  max_concurrent: 5, usage_limit: 0, is_active: true
+})
+
+const keys = ref([])
+const loading = ref(true)
+const providers = ref(PROVIDERS)
+const showAdd = ref(false)
+const editingKey = ref(null)
+
+const form = ref(emptyForm())
+const formError = ref('')
+const submitting = ref(false)
+
+const summary = ref({})
+const nodeUsage = ref([])
+const records = ref([])
+
+const fetchData = async () => {
+  try {
+    keys.value = await llmKeys.list()
+    summary.value = await tokenUsage.summary()
+    nodeUsage.value = await tokenUsage.byNode()
+    records.value = await tokenUsage.query({ limit: 50 })
+  } catch (e) {
+    console.error('Failed to fetch LLM keys data:', e)
+  } finally {
+    loading.value = false
+  }
 }
+
+const closeForm = () => {
+  showAdd.value = false
+  editingKey.value = null
+  form.value = emptyForm()
+  formError.value = ''
+}
+
+const startEdit = (k) => {
+  editingKey.value = k
+  form.value = {
+    name: k.name,
+    provider: k.provider,
+    api_key: '',
+    api_base: k.api_base || '',
+    max_concurrent: k.max_concurrent,
+    usage_limit: k.usage_limit,
+    is_active: k.is_active
+  }
+}
+
+const submitForm = async () => {
+  formError.value = ''
+  if (!editingKey.value && (!form.value.name || !form.value.provider || !form.value.api_key)) {
+    formError.value = '请填写名称、Provider 和 API Key'
+    return
+  }
+  submitting.value = true
+  try {
+    if (editingKey.value) {
+      await llmKeys.update(editingKey.value.id, {
+        name: form.value.name,
+        max_concurrent: form.value.max_concurrent,
+        usage_limit: form.value.usage_limit,
+        is_active: form.value.is_active
+      })
+    } else {
+      await llmKeys.create({
+        name: form.value.name,
+        provider: form.value.provider,
+        api_key: form.value.api_key,
+        api_base: form.value.api_base,
+        max_concurrent: form.value.max_concurrent,
+        usage_limit: form.value.usage_limit
+      })
+    }
+    closeForm()
+    await fetchData()
+  } catch (e) {
+    formError.value = e.message
+  } finally {
+    submitting.value = false
+  }
+}
+
+const removeKey = async (k) => {
+  if (!confirm(`确定删除 Key "${k.name}"？`)) return
+  try {
+    await llmKeys.delete(k.id)
+    await fetchData()
+  } catch (e) {
+    alert('删除失败: ' + e.message)
+  }
+}
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchData()
+})
 </script>

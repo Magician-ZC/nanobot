@@ -111,89 +111,155 @@
   </div>
 </template>
 
-<script>
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { nodes, skills, mcpServers, personas, policies, configs, llmKeys, getCurrentUser } from '../api.js'
 
-export default {
-  data() {
-    return {
-      node: null, loading: true, error: '',
-      allSkills: [], allMcpServers: [], allPersonas: [], allLlmKeys: [],
-      selectedSkills: [], selectedMcpServers: [], selectedPersonas: [],
-      selectedLlmKeyId: '', assignedLlmKeyId: '', replaceExisting: false,
-      assigningLlm: false, llmAssignError: '', llmAssignMessage: '',
-      configText: '{}', configError: '', saving: false, savingConfig: false,
-    }
-  },
-  computed: {
-    isAdmin() { const u = getCurrentUser(); return u && u.role === 'admin' },
-  },
-  methods: {
-    async fetchData() {
-      const id = this.$route.params.id; this.error = ''
+const route = useRoute()
+
+const node = ref(null)
+const loading = ref(true)
+const error = ref('')
+
+const allSkills = ref([])
+const allMcpServers = ref([])
+const allPersonas = ref([])
+const allLlmKeys = ref([])
+
+const selectedSkills = ref([])
+const selectedMcpServers = ref([])
+const selectedPersonas = ref([])
+const selectedLlmKeyId = ref('')
+const assignedLlmKeyId = ref('')
+const replaceExisting = ref(false)
+
+const assigningLlm = ref(false)
+const llmAssignError = ref('')
+const llmAssignMessage = ref('')
+
+const configText = ref('{}')
+const configError = ref('')
+const saving = ref(false)
+const savingConfig = ref(false)
+
+const isAdmin = computed(() => {
+  const u = getCurrentUser()
+  return u && u.role === 'admin'
+})
+
+const fetchData = async () => {
+  const id = route.params.id
+  error.value = ''
+  try {
+    if (isAdmin.value) {
+      const [n, sk, mcp, ps, keys] = await Promise.all([
+        nodes.get(id), skills.list(), mcpServers.list(), personas.list(), llmKeys.list(),
+      ])
+      node.value = n
+      allSkills.value = sk
+      allMcpServers.value = mcp
+      allPersonas.value = ps
+      allLlmKeys.value = keys
+      
       try {
-        if (this.isAdmin) {
-          const [node, sk, mcp, ps, keys] = await Promise.all([
-            nodes.get(id), skills.list(), mcpServers.list(), personas.list(), llmKeys.list(),
-          ])
-          this.node = node; this.allSkills = sk; this.allMcpServers = mcp; this.allPersonas = ps; this.allLlmKeys = keys
-          try {
-            const policy = await policies.get(id)
-            this.selectedSkills = policy.allowed_skills || []
-            this.selectedMcpServers = policy.allowed_mcp_servers || []
-            this.selectedPersonas = policy.allowed_personas || []
-          } catch { /* no policy yet */ }
-          try {
-            const cfg = await configs.get(id)
-            this.configText = JSON.stringify(cfg.config_data, null, 2)
-            this.assignedLlmKeyId = cfg.config_data?.llm_key?.key_id || ''
-            if (!this.selectedLlmKeyId && this.assignedLlmKeyId) this.selectedLlmKeyId = this.assignedLlmKeyId
-          } catch { this.configText = '{}'; this.assignedLlmKeyId = '' }
-          return
+        const policy = await policies.get(id)
+        selectedSkills.value = policy.allowed_skills || []
+        selectedMcpServers.value = policy.allowed_mcp_servers || []
+        selectedPersonas.value = policy.allowed_personas || []
+      } catch { /* no policy yet */ }
+      
+      try {
+        const cfg = await configs.get(id)
+        configText.value = JSON.stringify(cfg.config_data, null, 2)
+        assignedLlmKeyId.value = cfg.config_data?.llm_key?.key_id || ''
+        if (!selectedLlmKeyId.value && assignedLlmKeyId.value) {
+          selectedLlmKeyId.value = assignedLlmKeyId.value
         }
-        this.node = await nodes.get(id)
-      } catch (e) { this.error = e.message }
-      finally { this.loading = false }
-    },
-    async savePolicy() {
-      this.saving = true
-      try {
-        await policies.update(this.$route.params.id, {
-          allowed_skills: this.selectedSkills,
-          allowed_mcp_servers: this.selectedMcpServers,
-          allowed_personas: this.selectedPersonas,
-        })
-        this.node = await nodes.get(this.$route.params.id)
-      } catch (e) { alert('保存失败: ' + e.message) }
-      finally { this.saving = false }
-    },
-    async saveConfig() {
-      this.configError = ''
-      let parsed
-      try { parsed = JSON.parse(this.configText) } catch { this.configError = 'JSON 格式无效'; return }
-      this.savingConfig = true
-      try { await configs.update(this.$route.params.id, { config_data: parsed }); this.node = await nodes.get(this.$route.params.id) }
-      catch (e) { this.configError = '保存失败: ' + e.message }
-      finally { this.savingConfig = false }
-    },
-    async assignLlmKey() {
-      this.llmAssignError = ''; this.llmAssignMessage = ''
-      if (!this.selectedLlmKeyId) { this.llmAssignError = '请选择 Key'; return }
-      this.assigningLlm = true
-      try {
-        const r = await nodes.assignLLMKey(this.$route.params.id, { key_id: this.selectedLlmKeyId, replace_existing: this.replaceExisting })
-        await this.fetchData()
-        this.llmAssignMessage = r.idempotent ? '已分配此 Key（幂等）' : (r.replaced ? '已替换 LLM Key' : '分配成功')
-      } catch (e) { this.llmAssignError = e.message }
-      finally { this.assigningLlm = false }
-    },
-    formatTime(t) {
-      if (!t) return '-'
-      try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
-    },
-  },
-  mounted() { this.fetchData() },
+      } catch {
+        configText.value = '{}'
+        assignedLlmKeyId.value = ''
+      }
+      return
+    }
+    node.value = await nodes.get(id)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
 }
+
+const savePolicy = async () => {
+  saving.value = true
+  try {
+    await policies.update(route.params.id, {
+      allowed_skills: selectedSkills.value,
+      allowed_mcp_servers: selectedMcpServers.value,
+      allowed_personas: selectedPersonas.value,
+    })
+    node.value = await nodes.get(route.params.id)
+  } catch (e) {
+    alert('保存失败: ' + e.message)
+  } finally {
+    saving.value = false
+  }
+}
+
+const saveConfig = async () => {
+  configError.value = ''
+  let parsed
+  try {
+    parsed = JSON.parse(configText.value)
+  } catch {
+    configError.value = 'JSON 格式无效'
+    return
+  }
+  savingConfig.value = true
+  try {
+    await configs.update(route.params.id, { config_data: parsed })
+    node.value = await nodes.get(route.params.id)
+  } catch (e) {
+    configError.value = '保存失败: ' + e.message
+  } finally {
+    savingConfig.value = false
+  }
+}
+
+const assignLlmKey = async () => {
+  llmAssignError.value = ''
+  llmAssignMessage.value = ''
+  if (!selectedLlmKeyId.value) {
+    llmAssignError.value = '请选择 Key'
+    return
+  }
+  assigningLlm.value = true
+  try {
+    const r = await nodes.assignLLMKey(route.params.id, {
+      key_id: selectedLlmKeyId.value,
+      replace_existing: replaceExisting.value
+    })
+    await fetchData()
+    llmAssignMessage.value = r.idempotent ? '已分配此 Key（幂等）' : (r.replaced ? '已替换 LLM Key' : '分配成功')
+  } catch (e) {
+    llmAssignError.value = e.message
+  } finally {
+    assigningLlm.value = false
+  }
+}
+
+const formatTime = (t) => {
+  if (!t) return '-'
+  try {
+    return new Date(t).toLocaleString('zh-CN')
+  } catch {
+    return t
+  }
+}
+
+onMounted(() => {
+  fetchData()
+})
 </script>
 
 <style scoped>
